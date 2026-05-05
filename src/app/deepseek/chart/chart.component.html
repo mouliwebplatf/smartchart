@@ -1,0 +1,282 @@
+<!-- chart.component.html — Enhanced with handle overlay canvas, duplicate button, Ctrl+D hint -->
+<div class="chart-page" [class.light-theme]="currentTheme === 'light'">
+
+  <!-- ══════════════ HEADER ══════════════ -->
+  <div class="chart-header">
+    <div class="duration-filter">
+      <label>Show last</label>
+      <input type="number" [(ngModel)]="durationValue" (change)="onDurationChange()" min="1">
+      <select [(ngModel)]="durationType" (change)="onDurationChange()">
+        <option value="day">Day(s)</option>
+        <option value="month">Month(s)</option>
+        <option value="year">Year(s)</option>
+      </select>
+    </div>
+
+    <h2>{{ testName }}</h2>
+
+    <div class="header-controls">
+      <button class="btn-theme" (click)="toggleTheme()" title="Toggle Theme">
+        <svg *ngIf="currentTheme === 'dark'" width="20" height="20" viewBox="0 0 24 24"
+             fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="5"/>
+          <line x1="12" y1="1"  x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/>
+          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+          <line x1="1"  y1="12" x2="3"  y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
+          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+        </svg>
+        <svg *ngIf="currentTheme === 'light'" width="20" height="20" viewBox="0 0 24 24"
+             fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+        <span>{{ currentTheme === 'dark' ? 'Light' : 'Dark' }}</span>
+      </button>
+      <button class="btn-back" (click)="backToDashboard()">← Back</button>
+      <div class="user-role-badge" [class.admin]="userRole === 'admin'">{{ userRole | uppercase }}</div>
+    </div>
+  </div>
+
+  <!-- ══════════════ MAIN AREA ══════════════ -->
+  <div class="chart-container-wrapper">
+
+    <!-- LEFT TOOLBAR -->
+    <div class="left-toolbar">
+
+      <div class="toolbar-section">
+        <div class="toolbar-title">Drawing</div>
+
+        <button class="tool-btn" [class.active]="activeTool === 'trendline'"
+                (click)="setActiveTool('trendline')" title="Draw Trend Line">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="3" y1="3" x2="21" y2="21"/>
+            <circle cx="3"  cy="3"  r="1.5" fill="currentColor"/>
+            <circle cx="21" cy="21" r="1.5" fill="currentColor"/>
+          </svg>
+          <span>Line</span>
+        </button>
+      </div>
+
+      <div class="toolbar-divider"></div>
+
+      <div class="toolbar-section">
+        <div class="toolbar-title">Selection</div>
+
+        <button class="tool-btn" [class.active]="activeTool === 'select'"
+                (click)="setActiveTool('select')" title="Select / Move / Extend Line">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 3L9 21L12 15L18 18L15 12L21 9L3 3Z"/>
+          </svg>
+          <span>Select</span>
+        </button>
+      </div>
+
+      <div class="toolbar-divider"></div>
+
+      <div class="toolbar-section">
+        <div class="toolbar-title">Actions</div>
+
+        <!-- Duplicate -->
+        <button class="tool-btn duplicate"
+                (click)="duplicateSelectedLine()"
+                [disabled]="!selectedLineId"
+                title="Duplicate selected line (Ctrl+D)">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="8" y="8" width="13" height="13" rx="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+          <span>Duplicate</span>
+          <span class="kbd-hint">Ctrl+D</span>
+        </button>
+
+        <!-- Duplicate & Extend -->
+        <button class="tool-btn duplicate-extend"
+                (click)="duplicateAndExtendManually()"
+                [disabled]="!selectedLineId"
+                title="Duplicate line and extend manually">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="8" y="8" width="13" height="13" rx="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            <polyline points="15 18 18 21 21 18"/>
+            <polyline points="15 6 18 3 21 6"/>
+          </svg>
+          <span>Dup + Extend</span>
+        </button>
+
+        <!-- Delete -->
+        <button class="tool-btn delete"
+                (click)="deleteSelectedLine()"
+                [disabled]="!selectedLineId"
+                title="Delete selected line (Del)">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+          </svg>
+          <span>Delete</span>
+          <span class="kbd-hint">Del</span>
+        </button>
+
+        <!-- Save (admin only) -->
+        <button *ngIf="userRole === 'admin'" class="tool-btn save"
+                (click)="saveAllLines()" title="Save as correct answers">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+            <polygon points="12 3 12 10 8 10 12 14 16 10 12 10"/>
+          </svg>
+          <span>Save</span>
+        </button>
+
+        <!-- Reset -->
+        <button class="tool-btn reset" (click)="resetAllLines()" title="Reset all lines (Ctrl+R)">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="1 4 1 10 7 10"/>
+            <path d="M3.51 15a9 9 0 1 0 .49-3.5"/>
+          </svg>
+          <span>Reset</span>
+          <span class="kbd-hint">Ctrl+R</span>
+        </button>
+      </div>
+
+      <!-- ── Selection info panel ── -->
+      <div class="selection-info" *ngIf="selectedLineId && activeTool === 'select'">
+        <div class="info-title">Selected Line</div>
+        <div class="info-row">
+          <span class="info-icon">↔</span>
+          <span>Drag body to move</span>
+        </div>
+        <div class="info-row">
+          <span class="info-icon">◀▶</span>
+          <span>Drag handles to extend</span>
+        </div>
+        <div class="info-row">
+          <span class="info-icon">⊕</span>
+          <span>Ctrl+D to duplicate</span>
+        </div>
+        <div class="info-row">
+          <span class="info-icon">✕</span>
+          <span>Del to remove</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════ CHART AREA ══════════════ -->
+    <div class="chart-area">
+
+      <!-- Validation / status message -->
+      <div class="validation-message"
+           *ngIf="validationMessage"
+           [class.success]="messageType === 'success'"
+           [class.error]="messageType === 'error'"
+           [class.info]="messageType === 'info'">
+        {{ validationMessage }}
+      </div>
+
+      <!-- Drawing state badge -->
+      <div class="drawing-badge" *ngIf="isDrawing">
+        <span class="pulse"></span> Click to set end point &nbsp;·&nbsp; Esc to cancel
+      </div>
+
+      <!-- LW Chart host -->
+      <div #chartContainer class="chart-container"
+           [class.cursor-crosshair]="activeTool !== 'select'"
+           [class.cursor-pointer]="activeTool === 'select'"></div>
+
+      <!-- Handle overlay canvas for drag handles -->
+      <canvas #handleCanvas class="handle-canvas"
+        [style.pointer-events]="activeTool === 'select' && cursorIsOverInteractable ? 'auto' : 'none'">
+</canvas>
+    </div>
+  </div>
+
+  <!-- ══════════════ EXTENSION CONTROL PANEL (Optional) ══════════════ -->
+  <div class="extend-overlay" *ngIf="showExtendControls">
+    <div class="extend-panel">
+      <div class="extend-header">
+        <h3>📏 Extend Line</h3>
+        <button class="close-btn" (click)="closeExtendControls()">✕</button>
+      </div>
+      
+      <div class="extend-content">
+        <div class="extend-control-group">
+          <label>Extend Left (days)</label>
+          <div class="slider-container">
+            <input 
+              type="range" 
+              [(ngModel)]="extendLeftValue" 
+              min="0" 
+              max="100" 
+              step="1"
+              class="extend-slider">
+            <span class="value-display">{{ extendLeftValue }} days</span>
+          </div>
+          <div class="button-group">
+            <button (click)="extendLeftValue = 0" class="btn-small">Reset</button>
+            <button (click)="extendLeftValue = 10" class="btn-small">+10</button>
+            <button (click)="extendLeftValue = 30" class="btn-small">+30</button>
+          </div>
+        </div>
+
+        <div class="extend-control-group">
+          <label>Extend Right (days)</label>
+          <div class="slider-container">
+            <input 
+              type="range" 
+              [(ngModel)]="extendRightValue" 
+              min="0" 
+              max="100" 
+              step="1"
+              class="extend-slider">
+            <span class="value-display">{{ extendRightValue }} days</span>
+          </div>
+          <div class="button-group">
+            <button (click)="extendRightValue = 0" class="btn-small">Reset</button>
+            <button (click)="extendRightValue = 10" class="btn-small">+10</button>
+            <button (click)="extendRightValue = 30" class="btn-small">+30</button>
+          </div>
+        </div>
+
+        <div class="extend-actions">
+          <button class="btn-apply" (click)="extendLineManually()">
+            ✓ Apply Extension
+          </button>
+          <button class="btn-cancel" (click)="closeExtendControls()">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════ INSTRUCTIONS ══════════════ -->
+  <div class="instructions">
+    <h3>📐 Drawing Guide</h3>
+    <ul>
+      <li><strong>Draw Line:</strong> Select Line tool → click start point → click end point</li>
+      <li><strong>Select / Move:</strong> Select tool → click a line to select → drag the body to translate</li>
+      <li><strong>Extend / Shrink:</strong> Select a line → drag the <strong>◀ ▶ handles</strong> at each end</li>
+      <li><strong>Duplicate:</strong> Select a line → <kbd>Ctrl+D</kbd> or click the Duplicate button</li>
+      <li><strong>Delete:</strong> Select a line → <kbd>Del</kbd> or click Delete button</li>
+      <li><strong>Reset All:</strong> <kbd>Ctrl+R</kbd> to clear all lines</li>
+      <li *ngIf="userRole === 'admin'"><strong>Admin:</strong> Draw lines then click "Save" to set correct answers</li>
+      <li *ngIf="userRole !== 'admin'"><strong>User:</strong> Draw lines to practise — validation is instant</li>
+    </ul>
+  </div>
+</div>
+<div class="progress-badge" *ngIf="userRole !== 'admin' && totalAdminLines > 0 && !testComplete">
+  <span class="progress-icon">📍</span>
+  {{ matchedCount }} / {{ totalAdminLines }} lines matched
+</div>
+
+<!-- Test complete banner -->
+<div class="complete-banner" *ngIf="testComplete">
+  🎉 Test Complete! All {{ totalAdminLines }} lines matched.
+</div>
+<!-- Shift-lock hint during handle drag -->
+<div class="drawing-badge shift-hint"
+     *ngIf="(isExtendingLeftHandle || isExtendingRightHandle) && shiftHeld">
+  <span>🔒</span> Shift held — locked to original slope
+</div>
+<div class="drawing-badge shift-hint"
+     *ngIf="shiftHeld && (isDrawing || isExtendingLeftHandle || isExtendingRightHandle)">
+  <span>🔒</span> Shift — snapped to 45° angle
+</div>

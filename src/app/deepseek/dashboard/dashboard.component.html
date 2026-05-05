@@ -1,0 +1,85 @@
+<div class="dashboard-container">
+  <nav class="navbar">
+    <div class="nav-brand">
+      <h1>Trading Platform Dashboard</h1>
+    </div>
+    <div class="nav-actions">
+      <span class="user-role">Role: {{ userRole | uppercase }}</span>
+      <button class="btn-logout" (click)="logout()">Logout</button>
+    </div>
+  </nav>
+
+  <div class="dashboard-content">
+    <div class="dashboard-header">
+      <h2>Available Tests</h2>
+      <button *ngIf="userRole === 'admin'" class="btn-add" (click)="showAddModal = true">
+        + Add New Test
+      </button>
+    </div>
+
+    <div class="tests-grid">
+      <div *ngFor="let test of tests" class="test-card">
+        <div class="test-header">
+          <h3>{{ test.name }}</h3>
+          <div class="test-actions" *ngIf="userRole === 'admin'">
+            <button class="btn-edit" (click)="editTests(test)">Edit</button>
+            <button class="btn-delete" (click)="deleteTest(test.id)">Delete</button>
+          </div>
+        </div>
+        <p class="test-description">{{ test.description }}</p>
+        <div class="test-footer">
+          <span class="test-date">Updated: {{ test.updatedAt | date:'medium' }}</span>
+          <button class="btn-open" (click)="openChart(test.id)">Open Chart</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add Test Modal -->
+  <div class="modal" *ngIf="showAddModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Add New Test</h3>
+        <button class="close" (click)="showAddModal = false">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Test Name</label>
+          <input type="text" [(ngModel)]="newTest.name" placeholder="Enter test name" />
+        </div>
+        <div class="form-group">
+          <label>Description</label>
+          <textarea [(ngModel)]="newTest.description" placeholder="Enter test description"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel" (click)="showAddModal = false">Cancel</button>
+        <button class="btn-submit" (click)="addTest()">Add Test</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit Test Modal -->
+  <div class="modal" *ngIf="showEditModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Edit Test</h3>
+        <button class="close" (click)="showEditModal = false">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Test Name</label>
+          <input type="text" [(ngModel)]="editTest.name" placeholder="Enter test name" />
+        </div>
+        <div class="form-group">
+          <label>Description</label>
+          <textarea [(ngModel)]="editTest.description" placeholder="Enter test description"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel" (click)="showEditModal = false">Cancel</button>
+        <button class="btn-submit" (click)="updateTest()">Update Test</button>
+      </div>
+    </div>
+  </div>
+</div>
