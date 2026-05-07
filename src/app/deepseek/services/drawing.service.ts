@@ -167,40 +167,44 @@ clearMatchedLines(testId: number): void {
   this.persist();
 }
 
+// drawing.service.ts – updated validation logic
+
 validateUserLine(testId: number, userLine: DrawingLine): ValidationResult {
   const adminLines = this.adminLines.get(testId) ?? [];
-  
   if (adminLines.length === 0) {
     return {
-      isValid: true, score: 0, isWithinTolerance: true,
-      message: 'No correct lines defined — line accepted.'
+      isValid: true,
+      score: 0,
+      isWithinTolerance: true,
+      remainingCount: 0,
+      message: 'No correct lines defined – line accepted.'
     };
   }
 
-  const matched = this.matchedLines.get(testId) ?? new Set<string>();
+  const matched = this.matchedLines.get(testId) ?? new Set();
   const remaining = adminLines.filter(al => !matched.has(al.id));
-
   if (remaining.length === 0) {
     return {
-      isValid: true, score: 0, isWithinTolerance: true,
+      isValid: true,
+      score: 0,
+      isWithinTolerance: true,
       remainingCount: 0,
       message: 'All lines already matched!'
     };
   }
 
-  // Find closest unmatched admin line
   let bestMatch: DrawingLine | null = null;
   let bestScore = Infinity;
 
   for (const al of remaining) {
-    const score = this._similarityByTime(userLine, al);
-    console.log(`[Validation] Comparing with admin line ${al.id}, score: ${score.toFixed(6)}`);
-    if (score < bestScore) { bestScore = score; bestMatch = al; }
+    const score = this._similarityWithContainment(userLine, al);
+    if (score < bestScore) {
+      bestScore = score;
+      bestMatch = al;
+    }
   }
 
-  console.log(`[Validation] Best score: ${bestScore.toFixed(6)}, threshold: 0.02`);
-
-  const isValid = bestScore < 0.02;
+  const isValid = bestScore < 0.02;   // threshold for slope+price match
 
   if (isValid && bestMatch) {
     matched.add(bestMatch.id);
@@ -208,7 +212,9 @@ validateUserLine(testId: number, userLine: DrawingLine): ValidationResult {
     this.persist();
     const stillRemaining = adminLines.filter(al => !matched.has(al.id));
     return {
-      isValid: true, score: bestScore, isWithinTolerance: true,
+      isValid: true,
+      score: bestScore,
+      isWithinTolerance: true,
       correctLine: bestMatch,
       remainingCount: stillRemaining.length,
       message: stillRemaining.length === 0
@@ -218,60 +224,55 @@ validateUserLine(testId: number, userLine: DrawingLine): ValidationResult {
   }
 
   return {
-    isValid: false, score: bestScore, isWithinTolerance: false,
+    isValid: false,
+    score: bestScore,
+    isWithinTolerance: false,
     correctLine: bestMatch ?? undefined,
     remainingCount: remaining.length,
-    message: '✗ Incorrect — draw closer to the correct line.',
+    message: '✗ Incorrect – draw closer to the correct line.',
   };
 }
 
-private _similarityByTime(a: DrawingLine, b: DrawingLine): number {
-  // Use time/price only — pixel coords are unstable across resizes
+private _similarityWithContainment(user: DrawingLine, admin: DrawingLine): number {
+  const toleranceSec = 86400; // 1 day tolerance on endpoints
 
-  const timeSpanB = b.endTime - b.startTime;
-  const timeSpanA = a.endTime - a.startTime;
+  const userStart  = user.startTime;
+  const userEnd    = user.endTime;
+  const adminStart = admin.startTime;
+  const adminEnd   = admin.endTime;
 
-  // Slope in price-per-second
-  const slopeA = Math.abs(timeSpanA) > 0 
-    ? (a.endPrice - a.startPrice) / timeSpanA 
-    : 0;
-  const slopeB = Math.abs(timeSpanB) > 0 
-    ? (b.endPrice - b.startPrice) / timeSpanB 
-    : 0;
+  // 1. Endpoint proximity — user's start must be close to admin's start
+  //    and user's end must be close to admin's end
+  const startDiff = Math.abs(userStart - adminStart);
+  const endDiff   = Math.abs(userEnd   - adminEnd);
 
-  // Sample both lines at the same 3 time points within admin line's range
-  // This is the most robust comparison — check price agreement at multiple points
-  const t0 = b.startTime;
-  const t1 = b.startTime + timeSpanB * 0.5;
-  const t2 = b.endTime;
+  if (startDiff > toleranceSec || endDiff > toleranceSec) {
+    return 2.0; // endpoints too far from admin endpoints → invalid
+  }
 
-  // Admin line price at sample points
-  const bPrice0 = b.startPrice;
-  const bPrice1 = b.startPrice + slopeB * (t1 - b.startTime);
-  const bPrice2 = b.endPrice;
+  // 2. Slope and price similarity — sample points across the overlap
+  const overlapStart = Math.max(userStart, adminStart);
+  const overlapEnd   = Math.min(userEnd,   adminEnd);
+  if (overlapEnd <= overlapStart) return 2.0;
 
-  // User line extended to same sample points using its slope
-  const interceptA = a.startPrice - slopeA * a.startTime;
-  const aPrice0 = slopeA * t0 + interceptA;
-  const aPrice1 = slopeA * t1 + interceptA;
-  const aPrice2 = slopeA * t2 + interceptA;
+  const slopeUser  = (user.endPrice  - user.startPrice)  / (user.endTime  - user.startTime);
+  const slopeAdmin = (admin.endPrice - admin.startPrice) / (admin.endTime - admin.startTime);
+  const interceptUser  = user.startPrice  - slopeUser  * user.startTime;
+  const interceptAdmin = admin.startPrice - slopeAdmin * admin.startTime;
 
-  // Normalise difference by the mid-price level (e.g. ~23000 for NIFTY)
-  const midPrice = Math.max((b.startPrice + b.endPrice) / 2, 1);
-  const tolerance = midPrice * 0.05; // 5% of price level = generous tolerance band
+  const priceLevel     = Math.max(Math.abs(admin.startPrice), Math.abs(admin.endPrice), 1);
+  const tolerancePrice = priceLevel * 0.03; // 3% price tolerance (tighter than before)
 
-  const diff0 = Math.abs(aPrice0 - bPrice0) / tolerance;
-  const diff1 = Math.abs(aPrice1 - bPrice1) / tolerance;
-  const diff2 = Math.abs(aPrice2 - bPrice2) / tolerance;
+  let totalDiff = 0;
+  const steps = 5;
+  for (let i = 0; i <= steps; i++) {
+    const t          = overlapStart + (overlapEnd - overlapStart) * (i / steps);
+    const priceUser  = slopeUser  * t + interceptUser;
+    const priceAdmin = slopeAdmin * t + interceptAdmin;
+    totalDiff += Math.abs(priceUser - priceAdmin) / tolerancePrice;
+  }
 
-  // Average normalised diff — 0 = perfect match, 1 = at tolerance boundary
-  const score = (diff0 + diff1 + diff2) / 3;
-
-  console.log(`[Sim] slopeA=${slopeA.toFixed(6)} slopeB=${slopeB.toFixed(6)}`);
-  console.log(`[Sim] diffs at 3 points: ${diff0.toFixed(4)}, ${diff1.toFixed(4)}, ${diff2.toFixed(4)}`);
-  console.log(`[Sim] final score: ${score.toFixed(6)}`);
-
-  return score;
+  return totalDiff / (steps + 1);
 }
 
   // ═══════════════════════════ PRIVATE HELPERS ═════════════════
@@ -331,6 +332,7 @@ private persist(): void {
         ([testId, set]) => [testId, Array.from(set)]
       ),
     }));
+   
   } catch (e) {
     console.warn('[Store] persist failed:', e);
   }
@@ -353,5 +355,25 @@ private persist(): void {
     this.userLines    = new Map();
     this.matchedLines = new Map();
   }
+}
+// Add this method to DrawingService
+findAdminLineContainingTimeRange(testId: number, userLine: DrawingLine): DrawingLine | null {
+  const adminLines = this.adminLines.get(testId) ?? [];
+  const toleranceSec = 2 * 86400; // 2 days
+
+  for (const admin of adminLines) {
+    const adminStart = admin.startTime;
+    const adminEnd   = admin.endTime;
+    const userStart  = userLine.startTime;
+    const userEnd    = userLine.endTime;
+
+    const startInside = (userStart >= adminStart - toleranceSec && userStart <= adminEnd + toleranceSec);
+    const endInside   = (userEnd   >= adminStart - toleranceSec && userEnd   <= adminEnd + toleranceSec);
+
+    if (startInside && endInside) {
+      return admin; // first matching admin line
+    }
+  }
+  return null;
 }
 }

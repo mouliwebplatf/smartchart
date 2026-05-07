@@ -10,7 +10,8 @@ import { AuthService } from '../services/auth.service';
 import { DrawingLine, Point, ScreenPoint, ThemeMode } from '../models/drawing.model';
 import { Subject, takeUntil } from 'rxjs';
 
-type ToolMode = 'trendline' | 'hline' | 'vline' | 'ray' | 'select';
+// ── Added 'straightline' to the union ──────────────────────────────────────
+type ToolMode = 'trendline' | 'hline' | 'vline' | 'ray' | 'straightline' | 'select';
 
 @Component({
   selector: 'app-chart',
@@ -27,6 +28,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   private movePreviewSeries: any = null;
   private dragLineSnapshot: DrawingLine | null = null;
   private updatingPreview: boolean = false;
+
   shiftHeld: boolean = false;
   totalAdminLines: number = 0;
   matchedCount: number = 0;
@@ -47,6 +49,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   private handleCanvasContext: CanvasRenderingContext2D | null = null;
   private animationFrameId: number | null = null;
   private originalLineState: DrawingLine | null = null;
+  lastSavedTime: Date | null = null;
 
   private destroy$ = new Subject<void>();
   private isResetting = false;
@@ -85,14 +88,12 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
 
   validationMessage: string = '';
   messageType: 'success' | 'error' | 'info' = 'info';
-  showTolerance: boolean = false;
-  currentCorrectLine: DrawingLine | null = null;
-  private toleranceZoneSeries: any[] = [];
 
   private chart: any = null;
   private candlestickSeries: any = null;
   private lineSeriesMap: Map<string, any> = new Map();
   private chartData: any[] = [];
+  private isFreshUserSession: boolean = true;
 
   private themes = {
     light: { background: '#ffffff', textColor: '#333333', gridColor: '#e0e0e0', borderColor: '#d1d1d1' },
@@ -108,7 +109,9 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     private router: Router,
     private authService: AuthService,
     private drawingService: DrawingService
-  ) {}
+  ) {
+     
+  }
 
   ngAfterViewInit(): void {
     this.testId = Number(this.route.snapshot.paramMap.get('id'));
@@ -116,11 +119,32 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     this.testName = this.route.snapshot.queryParams['name'] || 'NIFTY 50';
     console.log('[Chart] Initialized, role:', this.userRole);
 
+    if (this.userRole !== 'admin' && this.isFreshUserSession) {
+      this.drawingService.clearAllUserLines(this.testId).subscribe(() => {
+        console.log('[Chart] User session started fresh – all previous user lines cleared.');
+        this.drawingService.clearMatchedLines(this.testId);
+        this.userLines = [];
+        this.matchedCount = 0;
+        this.totalAdminLines = 0;
+        this.testComplete = false;
+      });
+    }
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         this.initChart().then(() => this.loadData());
       });
     });
+  
+  }
+
+  // Seeded pseudo-random number generator (Mulberry32)
+  private seededRandom(seed: number): () => number {
+    return function() {
+      let t = seed += 0x6D2B79F5;
+      t = Math.imul(t ^ t >>> 15, t | 1);
+      t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
   }
 
   ngOnDestroy(): void {
@@ -128,12 +152,11 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     this.destroy$.next();
     this.destroy$.complete();
     window.removeEventListener('resize', this.handleResize);
-    
+
     if (this.animationFrameId) {
       cancelAnimationFrame(this.animationFrameId);
     }
-    
-    // Clear double-click timeout
+
     if (this.clickTimeout) {
       clearTimeout(this.clickTimeout);
     }
@@ -182,26 +205,23 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       rightPriceScale: { borderColor: t.borderColor },
       crosshair: { mode: 0 },
     });
-
+    //change the chart color ------------------------------------------------------------
     this.candlestickSeries = this.chart.addCandlestickSeries({
       upColor: '#00B746', downColor: '#EF403C',
       borderVisible: false,
       wickUpColor: '#00B746', wickDownColor: '#EF403C',
     });
 
-    // Fixed click handler with double-click prevention
     this.chart.subscribeClick((param: any) => {
       if (!param?.point) return;
-      
-      // Clear previous timeout
+
       if (this.clickTimeout) {
         clearTimeout(this.clickTimeout);
         this.clickTimeout = null;
         this.isDoubleClick = true;
-        return; // Ignore click if it's part of a double-click
+        return;
       }
-      
-      // Set timeout to check if this is a single click
+
       this.clickTimeout = setTimeout(() => {
         if (!this.isDoubleClick) {
           if (this.activeTool === 'select') {
@@ -228,7 +248,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
 
     window.addEventListener('resize', this.handleResize);
     await this.loadChartData();
-    
+
     setTimeout(() => {
       this.setupHandleCanvas();
     }, 100);
@@ -241,22 +261,18 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
 
     const dpr = window.devicePixelRatio || 1;
 
-    // Match size EXACTLY
     canvas.width  = container.clientWidth * dpr;
     canvas.height = container.clientHeight * dpr;
 
     canvas.style.width  = container.clientWidth + 'px';
     canvas.style.height = container.clientHeight + 'px';
 
-    // Align perfectly on top of chart
     canvas.style.position = 'absolute';
     canvas.style.top = '0';
     canvas.style.left = '0';
     canvas.style.pointerEvents = 'none';
 
     this.handleCanvasContext = canvas.getContext('2d');
-
-    // Fix blur & scaling
     this.handleCanvasContext?.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     this.startHandleRendering();
@@ -276,7 +292,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       return;
     }
 
-    // Search in both userLines and adminLines
     const line =
       this.userLines.find(l => l.id === this.selectedLineId) ??
       this.adminLines.find(l => l.id === this.selectedLineId);
@@ -311,7 +326,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
 
     ctx.save();
 
-    // Soft glow
     ctx.beginPath();
     ctx.arc(x, y, radius + 2, 0, Math.PI * 2);
     ctx.fillStyle = isActive
@@ -319,13 +333,11 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       : 'rgba(255,165,0,0.08)';
     ctx.fill();
 
-    // Main dot
     ctx.beginPath();
     ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.fillStyle = isActive ? '#FFA500' : '#cc8400';
     ctx.fill();
 
-    // Border
     ctx.beginPath();
     ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.strokeStyle = '#FFA500';
@@ -372,7 +384,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     const endPoint   = this.chartToScreenPoint(line.endTime,   line.endPrice);
     if (!startPoint || !endPoint) return null;
 
-    // Hit radius 28 — slightly larger than the 14px dot so it's easy to grab
     if (Math.hypot(sp.x - startPoint.x, sp.y - startPoint.y) < 14)
       return { type: 'left', lineId: line.id };
 
@@ -406,25 +417,30 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   }
 
   // ==================== DRAWING ====================
-private cancelDrawing(): void {
-  this.isDrawing = false;
-  this.hasFirstPoint = false;
-  this.drawingStartPoint = null;
+  private cancelDrawing(): void {
+    this.isDrawing = false;
+    this.hasFirstPoint = false;
+    this.drawingStartPoint = null;
 
-  // Use requestAnimationFrame to avoid removing the series during an active event
-  const preview = this.previewSeries;
-  this.previewSeries = null;
-  if (preview) {
-    requestAnimationFrame(() => {
-      try { this.chart.removeSeries(preview); } catch { }
-    });
+    const preview = this.previewSeries;
+    this.previewSeries = null;
+    if (preview) {
+      requestAnimationFrame(() => {
+        try { this.chart.removeSeries(preview); } catch { }
+      });
+    }
   }
-}
 
   private handleChartClick(param: any): void {
     const sp: ScreenPoint = { x: param.point.x, y: param.point.y };
     const cp = this.screenToChartPoint(sp);
     if (!cp) return;
+
+    // ── Straight line: single-click places a full-width horizontal line ──
+    if (this.activeTool === 'straightline') {
+      this.finishDrawing(cp);
+      return;
+    }
 
     if (!this.isDrawing) {
       this.isDrawing = true;
@@ -448,37 +464,62 @@ private cancelDrawing(): void {
   }
 
   private finishDrawing(endPoint: Point): void {
-    if (!this.drawingStartPoint) return;
-    let start = { ...this.drawingStartPoint };
-    let end = { ...endPoint };
+    let start: Point;
+    let end: Point;
 
-    
+    // ── Straight line: one click → derive full visible-range endpoints ──
+    if (this.activeTool === 'straightline') {
+      const tr = this.chart.timeScale().getVisibleRange();
+      if (!tr) return;
+      const from = tr.from as number;
+      const to   = tr.to   as number;
+      start = { x: 0, y: 0, time: from, price: endPoint.price };
+      end   = { x: 0, y: 0, time: to,   price: endPoint.price };
+    } else {
+      if (!this.drawingStartPoint) return;
+      start = { ...this.drawingStartPoint };
+      end   = { ...endPoint };
 
-    switch (this.activeTool) {
-      case 'hline':
-        end.price = start.price;
-        if (end.time === start.time) end.time = start.time + 86400;
-        break;
-      case 'vline':
-        end.price = start.price;
-        break;
-    }
-    if (this.activeTool !== 'ray' && this.activeTool !== 'vline' && start.time > end.time) {
-      [start, end] = [end, start];
+      switch (this.activeTool) {
+        case 'hline':
+          end.price = start.price;
+          if (end.time === start.time) end.time = start.time + 86400;
+          break;
+        case 'vline':
+          end.price = start.price;
+          break;
+      }
+      if (this.activeTool !== 'ray' && this.activeTool !== 'vline' && start.time > end.time) {
+        [start, end] = [end, start];
+      }
     }
 
     const newLine: DrawingLine = {
       id: uuidv4(),
       testId: this.testId,
       type: this.userRole === 'admin' ? 'admin' : 'user',
-      tool: this.activeTool as 'trendline' | 'hline' | 'vline' | 'ray',
+      // Store straightline as 'hline' so rendering/dragging logic is shared
+      tool: this.activeTool === 'straightline'
+              ? 'hline'
+              : (this.activeTool as 'trendline' | 'hline' | 'vline' | 'ray'),
       startX: start.x, startY: start.y,
       endX: end.x, endY: end.y,
       startTime: start.time, startPrice: start.price,
       endTime: end.time, endPrice: end.price,
-      color: this.userRole === 'admin' ? '#FF6B6B' : '#4ECDC4',
+      color: this.userRole === 'admin' ? '#FFFF00' : '#FFFF00',
       createdAt: new Date(),
-    };
+      // Flag dotted style for straight-line tool (stored as hline but rendered dotted)
+      ...(this.activeTool === 'straightline' ? { isDotted: true } : {}),
+    } as DrawingLine & { isDotted?: boolean };
+
+    // Straight line is a local-only visual reference — never saved to DB
+    if ((newLine as any).isDotted) {
+      newLine.color = '#FFFFFF';
+      this.userLines.push(newLine);
+      this.renderLines();
+      this.showMessage('✓ Reference line placed (not saved).', 'info');
+      return;
+    }
 
     if (this.userRole === 'admin') {
       this.adminLines.push(newLine);
@@ -490,48 +531,47 @@ private cancelDrawing(): void {
     }
   }
 
- private updatePreviewLine(param: any): void {
-  // Prevent re‑entrant calls and stale updates
-  if (this.updatingPreview || !this.isDrawing || !this.previewSeries) return;
-  this.updatingPreview = true;
+  private updatePreviewLine(param: any): void {
+    if (this.updatingPreview || !this.isDrawing || !this.previewSeries) return;
+    this.updatingPreview = true;
 
-  try {
-    const sp: ScreenPoint = { x: param.point.x, y: param.point.y };
-    let cp = this.screenToChartPoint(sp);
-    if (!cp) return;
+    try {
+      const sp: ScreenPoint = { x: param.point.x, y: param.point.y };
+      let cp = this.screenToChartPoint(sp);
+      if (!cp) return;
 
-    let end = { ...cp };
+      let end = { ...cp };
 
-    // Shift held → snap to horizontal/vertical
-    if (this.shiftHeld) {
-      end = this.snapToAngle(this.drawingStartPoint!, end);
-    }
-
-    if (this.activeTool === 'hline') end.price = this.drawingStartPoint!.price;
-    if (this.activeTool === 'vline') end.time = this.drawingStartPoint!.time;
-
-    if (this.activeTool === 'hline' || this.activeTool === 'ray') {
-      const pts = this.getExtendedPoints(this.drawingStartPoint!, end);
-      if (pts.length >= 2 && pts[0].time !== pts[1].time) {
-        this.previewSeries.setData(pts);
+      if (this.shiftHeld) {
+        end = this.snapToAngle(this.drawingStartPoint!, end);
       }
-    } else {
-      const t1 = this.drawingStartPoint!.time;
-      const t2 = end.time;
-      if (t1 === t2) return;
-      const ordered = t1 < t2
-        ? [{ time: t1, value: this.drawingStartPoint!.price }, { time: t2, value: end.price }]
-        : [{ time: t2, value: end.price }, { time: t1, value: this.drawingStartPoint!.price }];
-      if (ordered[0].time !== ordered[1].time) {
-        this.previewSeries.setData(ordered);
+
+      if (this.activeTool === 'hline') end.price = this.drawingStartPoint!.price;
+      if (this.activeTool === 'vline') end.time = this.drawingStartPoint!.time;
+
+      if (this.activeTool === 'hline' || this.activeTool === 'ray') {
+        const pts = this.getExtendedPoints(this.drawingStartPoint!, end);
+        if (pts.length >= 2 && pts[0].time !== pts[1].time) {
+          this.previewSeries.setData(pts);
+        }
+      } else {
+        const t1 = this.drawingStartPoint!.time;
+        const t2 = end.time;
+        if (t1 === t2) return;
+        const ordered = t1 < t2
+          ? [{ time: t1, value: this.drawingStartPoint!.price }, { time: t2, value: end.price }]
+          : [{ time: t2, value: end.price }, { time: t1, value: this.drawingStartPoint!.price }];
+        if (ordered[0].time !== ordered[1].time) {
+          this.previewSeries.setData(ordered);
+        }
       }
+    } catch (err) {
+      console.warn('Preview update error', err);
+    } finally {
+      this.updatingPreview = false;
     }
-  } catch (err) {
-    console.warn('Preview update error', err);
-  } finally {
-    this.updatingPreview = false;
   }
-}
+
   private snapToAngle(start: Point, end: Point): Point {
     const startScreen = this.chartToScreenPoint(start.time, start.price);
     const endScreen   = this.chartToScreenPoint(end.time,   end.price);
@@ -544,11 +584,9 @@ private cancelDrawing(): void {
     let newScreenY: number;
 
     if (Math.abs(dx) >= Math.abs(dy)) {
-      // Wider than tall → lock to HORIZONTAL (180°): freeze Y at start
       newScreenX = endScreen.x;
       newScreenY = startScreen.y;
-    } else { 
-      // Taller than wide → lock to VERTICAL (90°): freeze X at start
+    } else {
       newScreenX = startScreen.x;
       newScreenY = endScreen.y;
     }
@@ -575,7 +613,6 @@ private cancelDrawing(): void {
 
   // ==================== SELECT & HIT TEST ====================
   private handleSelectClick(param: any): void {
-    // Suppress click if the user just finished dragging
     if (this.dragDistance > 3) {
       this.dragDistance = 0;
       return;
@@ -583,15 +620,13 @@ private cancelDrawing(): void {
 
     const sp: ScreenPoint = { x: param.point.x, y: param.point.y };
 
-    // If clicking on a dot handle, do nothing (drag handler takes over)
     const handle = this.getHandleAtPoint(sp);
     if (handle) return;
-    if (this.isDraggingLine) return; 
+    if (this.isDraggingLine) return;
     const hit = this.getLineAtPoint(sp);
     if (hit) {
       this.selectedLineId    = hit.id;
       this.selectedLineOwner = hit.owner;
-      // Do NOT re-init drag here — onMouseDown already owns that
       this.renderLines();
       this.drawHandles();
     } else {
@@ -643,11 +678,11 @@ private cancelDrawing(): void {
     const rect = container.getBoundingClientRect();
     if (
       event.clientX < rect.left || event.clientX > rect.right ||
-      event.clientY < rect.top || event.clientY > rect.bottom
+      event.clientY < rect.top  || event.clientY > rect.bottom
     ) return;
 
     const sp: ScreenPoint = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-    
+
     const handle = this.getHandleAtPoint(sp);
     if (handle) {
       event.preventDefault();
@@ -662,7 +697,6 @@ private cancelDrawing(): void {
         this.isExtendingLeftHandle  = false;
       }
 
-      // Search both arrays for the original state snapshot
       const line =
         this.userLines.find(l => l.id === handle.lineId) ??
         this.adminLines.find(l => l.id === handle.lineId);
@@ -674,16 +708,15 @@ private cancelDrawing(): void {
       );
       return;
     }
-    
-    // If the hit line is a duplicate, only allow handle-drag (not body drag into new-line confusion)
+
     const hit = this.getLineAtPoint(sp);
     if (hit) {
       this.selectedLineId    = hit.id;
       this.selectedLineOwner = hit.owner;
       this.isDraggingLine    = true;
       this.draggedLineId     = hit.id;
-      event.preventDefault();   // ← ADD THIS
-  event.stopPropagation();
+      event.preventDefault();
+      event.stopPropagation();
       const line = hit.owner === 'user'
         ? this.userLines.find(l => l.id === hit.id)
         : this.adminLines.find(l => l.id === hit.id);
@@ -703,7 +736,6 @@ private cancelDrawing(): void {
   onMouseMove(event: MouseEvent): void {
     this.shiftHeld = event.shiftKey;
 
-    // Always accumulate drag distance while button is held
     if (this.isDraggingLine || this.isExtendingLeftHandle || this.isExtendingRightHandle) {
       this.dragDistance += Math.abs(event.movementX) + Math.abs(event.movementY);
     }
@@ -756,7 +788,6 @@ private cancelDrawing(): void {
     const curr = this.screenToChartPoint(sp);
     if (!curr || !this.dragStartPoint || !this.dragLineSnapshot) return;
 
-    // Always offset from the original snapshot — never accumulates drift
     const dt = curr.time  - this.dragStartPoint.time;
     const dp = curr.price - this.dragStartPoint.price;
     const snap = this.dragLineSnapshot;
@@ -776,7 +807,6 @@ private cancelDrawing(): void {
         line.endTime   = snap.endTime   + dt;
         break;
       default:
-        // trendline / ray — both endpoints move by identical delta, shape never changes
         line.startTime  = snap.startTime  + dt;
         line.endTime    = snap.endTime    + dt;
         line.startPrice = snap.startPrice + dp;
@@ -811,26 +841,18 @@ private cancelDrawing(): void {
     const slope     = Math.abs(dt) > 0.0001 ? dp / dt : 0;
     const intercept = line.startPrice - slope * line.startTime;
 
-    // Shift key = constrain: snap price to original slope (keeps angle perfectly straight)
     const shiftHeld = event.shiftKey;
 
     if (this.isExtendingLeftHandle) {
       line.startTime  = currentPoint.time;
-      // Shift held: force price to stay exactly on original slope
       line.startPrice = shiftHeld
-        ? slope * currentPoint.time + intercept   // stays on the exact original line
-        : slope * currentPoint.time + intercept;  // same formula — slope/intercept preserved
-      // Without shift: allow free drag (price snaps to cursor naturally via slope)
-      if (!shiftHeld) {
-        line.startPrice = currentPoint.price; // free price when no shift
-      }
+        ? slope * currentPoint.time + intercept
+        : currentPoint.price;
     } else if (this.isExtendingRightHandle) {
       line.endTime  = currentPoint.time;
-      if (!shiftHeld) {
-        line.endPrice = currentPoint.price; // free price when no shift
-      } else {
-        line.endPrice = slope * currentPoint.time + intercept; // locked to original slope
-      }
+      line.endPrice = shiftHeld
+        ? slope * currentPoint.time + intercept
+        : currentPoint.price;
     }
 
     if (isUser)  this.userLines[userIndex]   = line;
@@ -845,12 +867,12 @@ private cancelDrawing(): void {
     if (this.isDraggingLine && this.draggedLineId && this.dragDistance > 3) {
       this.saveDraggedLine();
     }
-      
+
     if ((this.isExtendingLeftHandle || this.isExtendingRightHandle) && this.extendingLineIdHandle) {
       const line = this.userLines.find(l => l.id === this.extendingLineIdHandle);
       if (line && this.originalLineState) {
         if (line.startTime !== this.originalLineState.startTime ||
-            line.endTime !== this.originalLineState.endTime) {
+            line.endTime   !== this.originalLineState.endTime) {
           this.drawingService.updateUserLine(this.testId, line.id, line).subscribe({
             next: () => {
               this.showMessage('✓ Line extended successfully!', 'success');
@@ -869,7 +891,7 @@ private cancelDrawing(): void {
         }
       }
     }
-    
+
     this.isExtendingLeftHandle  = false;
     this.isExtendingRightHandle = false;
     this.extendingLineIdHandle  = null;
@@ -887,7 +909,7 @@ private cancelDrawing(): void {
       const line = this.userLines.find(l => l.id === this.draggedLineId);
       if (line) {
         this.drawingService.updateUserLine(this.testId, line.id, line).subscribe({
-          next: (updated) => { 
+          next: (updated) => {
             if (Array.isArray(updated)) {
               this.userLines = updated;
             } else if (updated) {
@@ -904,7 +926,7 @@ private cancelDrawing(): void {
       const line = this.adminLines.find(l => l.id === this.draggedLineId);
       if (line) {
         this.drawingService.updateAdminLine(this.testId, line.id, line).subscribe({
-          next: (updated) => { 
+          next: (updated) => {
             if (Array.isArray(updated)) {
               this.adminLines = updated;
             } else if (updated) {
@@ -920,73 +942,69 @@ private cancelDrawing(): void {
   }
 
   // ==================== DUPLICATE ====================
-duplicateSelectedLine(): void {
-  // ✅ Block duplication if this was a double‑click
-  if (this.isDoubleClick) {
-    this.isDoubleClick = false;
-    return;
-  }
+  duplicateSelectedLine(): void {
+    if (this.isDoubleClick) {
+      this.isDoubleClick = false;
+      return;
+    }
 
-  if (!this.selectedLineId) {
-    this.showMessage('Select a line first.', 'info');
-    return;
-  }
+    if (!this.selectedLineId) {
+      this.showMessage('Select a line first.', 'info');
+      return;
+    }
 
-  const original = this.selectedLineOwner === 'user'
-    ? this.userLines.find(l => l.id === this.selectedLineId)
-    : this.adminLines.find(l => l.id === this.selectedLineId);
-  if (!original) return;
+    const original = this.selectedLineOwner === 'user'
+      ? this.userLines.find(l => l.id === this.selectedLineId)
+      : this.adminLines.find(l => l.id === this.selectedLineId);
+    if (!original) return;
 
-  // ── Calculate a visible offset ─────────────────────────────
-  let priceOffset = 100;       // fallback absolute points
-  let timeOffset  = 86400 * 2; // 2 days (in seconds) – ensures horizontal separation
-  try {
-    const visibleRange = this.chart.timeScale().getVisibleRange();
-    if (visibleRange && this.chartData.length) {
-      const from = visibleRange.from;
-      const to   = visibleRange.to;
-      const visiblePrices = this.chartData
-        .filter(d => d.time >= from && d.time <= to)
-        .flatMap(d => [d.low, d.high]);
-      if (visiblePrices.length) {
-        const minPrice = Math.min(...visiblePrices);
-        const maxPrice = Math.max(...visiblePrices);
-        priceOffset = (maxPrice - minPrice) * 0.02; // 2% of visible range
-        if (priceOffset < 50) priceOffset = 50;    // never too small
+    let priceOffset = 100;
+    let timeOffset  = 86400 * 2;
+    try {
+      const visibleRange = this.chart.timeScale().getVisibleRange();
+      if (visibleRange && this.chartData.length) {
+        const from = visibleRange.from;
+        const to   = visibleRange.to;
+        const visiblePrices = this.chartData
+          .filter(d => d.time >= from && d.time <= to)
+          .flatMap(d => [d.low, d.high]);
+        if (visiblePrices.length) {
+          const minPrice = Math.min(...visiblePrices);
+          const maxPrice = Math.max(...visiblePrices);
+          priceOffset = (maxPrice - minPrice) * 0.02;
+          if (priceOffset < 50) priceOffset = 50;
+        }
       }
+    } catch (e) {
+      console.warn('Offset fallback to default', e);
     }
-  } catch (e) {
-    console.warn('Offset fallback to default', e);
+
+    const duplicatedLine: DrawingLine = {
+      ...original,
+      id:         uuidv4(),
+      type:       'user',
+      color:      '#4ECDC4',
+      startPrice: original.startPrice + priceOffset,
+      endPrice:   original.endPrice   + priceOffset,
+      startTime:  original.startTime  + timeOffset,
+      endTime:    original.endTime    + timeOffset,
+      createdAt:  new Date(),
+    };
+
+    this.drawingService.saveUserLine(this.testId, duplicatedLine).subscribe({
+      next: (savedLine) => {
+        this.userLines.push(savedLine);
+        this.renderLines();
+        this.drawHandles();
+        this.showMessage('✓ Duplicated (shifted in price & time). Original still selectable.', 'success');
+      },
+      error: (err) => {
+        console.error('Duplicate failed:', err);
+        this.showMessage('Failed to duplicate line.', 'error');
+      }
+    });
   }
 
-  // ── Create duplicate with both price and time shift ─────────
-  const duplicatedLine: DrawingLine = {
-    ...original,
-    id:         uuidv4(),
-    type:       'user',
-    color:      '#4ECDC4',        // cyan (different from orange selection)
-    startPrice: original.startPrice + priceOffset,
-    endPrice:   original.endPrice   + priceOffset,
-    startTime:  original.startTime  + timeOffset,
-    endTime:    original.endTime    + timeOffset,
-    createdAt:  new Date(),
-  };
-
-  this.drawingService.saveUserLine(this.testId, duplicatedLine).subscribe({
-    next: (savedLine) => {
-      this.userLines.push(savedLine);
-      // ✅ Keep the original line selected – do NOT switch to duplicate
-      // Re-render so the original’s handles stay visible
-      this.renderLines();
-      this.drawHandles();
-      this.showMessage('✓ Duplicated (shifted in price & time). Original still selectable.', 'success');
-    },
-    error: (err) => {
-      console.error('Duplicate failed:', err);
-      this.showMessage('Failed to duplicate line.', 'error');
-    }
-  });
-}
   // ==================== LINE RENDERING ====================
   private removeSeries(id: string): void {
     if (this.lineSeriesMap.has(id)) {
@@ -1001,7 +1019,7 @@ duplicateSelectedLine(): void {
       const tr = this.chart.timeScale().getVisibleRange();
       if (!tr) return;
       const from = tr.from as number;
-      const to = tr.to as number;
+      const to   = tr.to   as number;
 
       this.removeSeries(line.id);
 
@@ -1014,6 +1032,7 @@ duplicateSelectedLine(): void {
       let data: any[];
       switch (line.tool) {
         case 'hline':
+          // hline always spans full visible width (covers straightline too)
           data = [{ time: from, value: line.startPrice }, { time: to, value: line.startPrice }];
           break;
         case 'ray': {
@@ -1027,13 +1046,14 @@ duplicateSelectedLine(): void {
         default:
           data = [
             { time: line.startTime, value: line.startPrice },
-            { time: line.endTime, value: line.endPrice },
+            { time: line.endTime,   value: line.endPrice },
           ];
           break;
       }
 
       const series = this.chart.addLineSeries({
         color, lineWidth: width, priceLineVisible: false, lastValueVisible: false,
+        lineStyle: (line as any).isDotted ? 2 : 0,
       });
       series.setData(data);
       this.lineSeriesMap.set(line.id, series);
@@ -1061,54 +1081,23 @@ duplicateSelectedLine(): void {
   private renderLines(): void {
     this.lineSeriesMap.forEach((_, id) => this.removeSeries(id));
     this.lineSeriesMap.clear();
-    this.toleranceZoneSeries.forEach(s => {
-      try { this.chart?.removeSeries(s); } catch { }
-    });
-    this.toleranceZoneSeries = [];
-
-    // Show ONLY tolerance zone when wrong — not the correct line itself
-    if (this.showTolerance && this.currentCorrectLine) {
-      this.renderToleranceZone(this.currentCorrectLine);
-      // Do NOT call renderLine(this.currentCorrectLine) — zone only
-    }
-
     this.userLines.forEach(l => this.renderLine(l));
-
-    // Admin sees their answer lines; users never do
     if (this.userRole === 'admin') {
       this.adminLines.forEach(l => this.renderLine(l));
     }
   }
 
-  private renderToleranceZone(line: DrawingLine): void {
-    const tr = this.chart.timeScale().getVisibleRange();
-    if (!tr) return;
-    const from = tr.from as number, to = tr.to as number;
-    const allP = this.chartData.flatMap((d: any) => [d.low, d.high]);
-    const tol = (Math.max(...allP) - Math.min(...allP)) * 0.05;
-    const dt = line.endTime - line.startTime;
-    const dp = line.endPrice - line.startPrice;
-    const m = dt !== 0 ? dp / dt : 0;
-    const b = line.startPrice - m * line.startTime;
-    const make = (offset: number) => {
-      const s = this.chart.addLineSeries({
-        color: 'rgba(0,255,0,0.4)', lineWidth: 1, lineStyle: 2,
-        priceLineVisible: false, lastValueVisible: false,
-      });
-      s.setData([{ time: from, value: m * from + b + offset }, { time: to, value: m * to + b + offset }]);
-      return s;
-    };
-    this.toleranceZoneSeries = [make(+tol), make(-tol)];
-  }
-
   // ==================== VALIDATION ====================
   private validateAndSaveUserLine(line: DrawingLine): void {
-    console.log('[Validate] userLine time range:', line.startTime, '-', line.endTime);
-    console.log('[Validate] userLine price range:', line.startPrice, '-', line.endPrice);
+    const containingAdminLine = this.drawingService.findAdminLineContainingTimeRange(this.testId, line);
+
+    if (containingAdminLine) {
+      this.flashAdminLine(containingAdminLine);
+    }
+
     const v = this.drawingService.validateUserLine(this.testId, line);
 
     if (v.isValid) {
-      // Correct — save and update progress
       this.userLines.push(line);
       this.drawingService.saveUserLine(this.testId, line).subscribe();
       this.matchedCount = this.drawingService.getMatchedLines(this.testId).size;
@@ -1117,34 +1106,38 @@ duplicateSelectedLine(): void {
         this.testComplete = true;
         this.showMessage('🎉 All lines matched! Test complete!', 'success');
       } else {
-        this.showMessage(
-          `✓ Correct! ${v.remainingCount} line(s) remaining.`, 'success'
-        );
+        this.showMessage(`✓ Correct! ${v.remainingCount} line(s) remaining.`, 'success');
       }
       this.renderLines();
-
     } else {
-      // Wrong — show ONLY tolerance zone (no correct line rendering), then remove wrong line
-      this.showMessage('✗ Incorrect — try drawing closer to the correct position.', 'error');
-
-      // Show tolerance zone around the closest admin line
-      this.showTolerance    = true;
-      this.currentCorrectLine = v.correctLine ?? null;
-
-      // Render tolerance zone only — do NOT add wrong line to userLines
-      this.renderLines();
-
-      setTimeout(() => {
-        this.showTolerance      = false;
-        this.currentCorrectLine = null;
-        this.toleranceZoneSeries.forEach(s => {
-          try { this.chart?.removeSeries(s); } catch { }
-        });
-        this.toleranceZoneSeries = [];
-        this.renderLines(); // clean state — user must redraw
-        this.showMessage('Tolerance zone hidden — try again.', 'info');
-      }, 4000);
+      this.showMessage('✗ Incorrect – adjust slope or price to match the admin line.', 'error');
     }
+  }
+
+  private flashAdminLine(adminLine: DrawingLine): void {
+    if (!this.chart) return;
+
+    const flashSeries = this.chart.addLineSeries({
+      color: '#FF00FF',
+      lineWidth: 4,
+      lineStyle: 0,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+
+    const data = [
+      { time: adminLine.startTime, value: adminLine.startPrice },
+      { time: adminLine.endTime,   value: adminLine.endPrice },
+    ];
+    flashSeries.setData(data);
+
+    setTimeout(() => {
+      try { flashSeries.applyOptions({ color: '#00FF00' }); } catch {}
+    }, 200);
+
+    setTimeout(() => {
+      try { this.chart.removeSeries(flashSeries); } catch {}
+    }, 1000);
   }
 
   // ==================== LINE MANAGEMENT ====================
@@ -1155,9 +1148,9 @@ duplicateSelectedLine(): void {
     }
 
     const lineId = this.selectedLineId;
-    const owner = this.selectedLineOwner;
+    const owner  = this.selectedLineOwner;
 
-    this.selectedLineId = null;
+    this.selectedLineId    = null;
     this.selectedLineOwner = null;
     this.clearHandles();
 
@@ -1182,7 +1175,7 @@ duplicateSelectedLine(): void {
   }
 
   resetAllLines(): void {
-    const confirmed = confirm(this.userRole === 'admin' 
+    const confirmed = confirm(this.userRole === 'admin'
       ? '⚠️ Reset all lines? This will clear ALL user and admin lines permanently.'
       : 'Reset ALL your drawn lines? This action cannot be undone.');
     if (!confirmed) return;
@@ -1191,37 +1184,30 @@ duplicateSelectedLine(): void {
     this.isResetting = true;
     this.destroy$.next();
 
-    this.lineSeriesMap.forEach(series => { 
-      try { this.chart.removeSeries(series); } catch { } 
+    this.lineSeriesMap.forEach(series => {
+      try { this.chart.removeSeries(series); } catch { }
     });
     this.lineSeriesMap.clear();
-    
-    this.toleranceZoneSeries.forEach(series => { 
-      try { this.chart?.removeSeries(series); } catch { } 
-    });
-    this.toleranceZoneSeries = [];
-    
-    if (this.previewSeries) { 
-      try { this.chart.removeSeries(this.previewSeries); } catch { } 
-      this.previewSeries = null; 
+
+    if (this.previewSeries) {
+      try { this.chart.removeSeries(this.previewSeries); } catch { }
+      this.previewSeries = null;
     }
 
-    this.userLines = [];
-    this.adminLines = [];
-    this.selectedLineId = null;
-    this.selectedLineOwner = null;
-    this.isDrawing = false;
-    this.hasFirstPoint = false;
-    this.drawingStartPoint = null;
-    this.isDraggingLine = false;
-    this.draggedLineId = null;
-    this.dragStartPoint = null;
-    this.showTolerance = false;
-    this.currentCorrectLine = null;
-    this.isExtendingLeftHandle = false;
+    this.userLines             = [];
+    this.adminLines            = [];
+    this.selectedLineId        = null;
+    this.selectedLineOwner     = null;
+    this.isDrawing             = false;
+    this.hasFirstPoint         = false;
+    this.drawingStartPoint     = null;
+    this.isDraggingLine        = false;
+    this.draggedLineId         = null;
+    this.dragStartPoint        = null;
+    this.isExtendingLeftHandle  = false;
     this.isExtendingRightHandle = false;
-    this.extendingLineIdHandle = null;
-    
+    this.extendingLineIdHandle  = null;
+
     this.clearHandles();
     this.renderLines();
 
@@ -1270,18 +1256,18 @@ duplicateSelectedLine(): void {
 
   private refreshLinesFromServer(): void {
     this.drawingService.getUserLines(this.testId).pipe(takeUntil(this.destroy$)).subscribe(lines => {
-      if (!this.isResetting) { 
-        this.userLines = lines || []; 
-        this.renderLines(); 
-        this.drawHandles(); 
+      if (!this.isResetting) {
+        this.userLines = lines || [];
+        this.renderLines();
+        this.drawHandles();
       }
     });
     if (this.userRole === 'admin') {
       this.drawingService.getAdminLines(this.testId).pipe(takeUntil(this.destroy$)).subscribe(lines => {
-        if (!this.isResetting) { 
-          this.adminLines = lines || []; 
-          this.renderLines(); 
-          this.drawHandles(); 
+        if (!this.isResetting) {
+          this.adminLines = lines || [];
+          this.renderLines();
+          this.drawHandles();
         }
       });
     }
@@ -1292,14 +1278,18 @@ duplicateSelectedLine(): void {
       this.showMessage('Only admin can save lines.', 'error');
       return;
     }
+
     if (this.adminLines.length === 0) {
       this.showMessage('No admin lines to save.', 'info');
       return;
     }
     this.showMessage('Saving answer lines...', 'info');
     this.drawingService.saveAdminLines(this.testId, this.adminLines).subscribe({
-      next: (saved) =>
-        this.showMessage(`✓ ${saved.length} answer line(s) saved as correct answers!`, 'success'),
+      next: (saved) => {
+        this.lastSavedTime = new Date();
+        this.showMessage(`✓ ${saved.length} answer line(s) saved to local storage!`, 'success');
+        console.table(saved)
+      },
       error: () => this.showMessage('Save failed.', 'error'),
     });
   }
@@ -1319,15 +1309,15 @@ duplicateSelectedLine(): void {
     }
     this.extendingLineId = this.selectedLineId;
     this.showExtendControls = true;
-    this.extendLeftValue = 0;
+    this.extendLeftValue  = 0;
     this.extendRightValue = 0;
   }
 
   closeExtendControls(): void {
-    this.showExtendControls = false;
-    this.extendingLineId = null;
-    this.extendLeftValue = 0;
-    this.extendRightValue = 0;
+    this.showExtendControls  = false;
+    this.extendingLineId     = null;
+    this.extendLeftValue     = 0;
+    this.extendRightValue    = 0;
   }
 
   extendLineManually(): void {
@@ -1335,43 +1325,43 @@ duplicateSelectedLine(): void {
     const line = this.userLines.find(l => l.id === this.extendingLineId);
     if (!line) return;
 
-    const dt = line.endTime - line.startTime;
-    const dp = line.endPrice - line.startPrice;
+    const dt    = line.endTime   - line.startTime;
+    const dp    = line.endPrice  - line.startPrice;
     const slope = dt !== 0 ? dp / dt : 0;
     const intercept = line.startPrice - slope * line.startTime;
 
-    const leftExtension = this.extendLeftValue * 86400;
+    const leftExtension  = this.extendLeftValue  * 86400;
     const rightExtension = this.extendRightValue * 86400;
 
-    const extendedStartTime = line.startTime - leftExtension;
-    const extendedEndTime = line.endTime + rightExtension;
+    const extendedStartTime  = line.startTime  - leftExtension;
+    const extendedEndTime    = line.endTime    + rightExtension;
     const extendedStartPrice = slope * extendedStartTime + intercept;
-    const extendedEndPrice = slope * extendedEndTime + intercept;
+    const extendedEndPrice   = slope * extendedEndTime   + intercept;
 
-    const updatedLine: DrawingLine = { 
-      ...line, 
-      startTime: extendedStartTime, 
-      startPrice: extendedStartPrice, 
-      endTime: extendedEndTime, 
-      endPrice: extendedEndPrice 
+    const updatedLine: DrawingLine = {
+      ...line,
+      startTime:  extendedStartTime,
+      startPrice: extendedStartPrice,
+      endTime:    extendedEndTime,
+      endPrice:   extendedEndPrice
     };
 
     const index = this.userLines.findIndex(l => l.id === line.id);
-    if (index !== -1) { 
-      this.userLines[index] = updatedLine; 
-      this.renderLines(); 
-      this.drawHandles(); 
+    if (index !== -1) {
+      this.userLines[index] = updatedLine;
+      this.renderLines();
+      this.drawHandles();
     }
 
     this.drawingService.updateUserLine(this.testId, line.id, updatedLine).subscribe({
-      next: () => { 
-        this.showMessage(`✓ Line extended left by ${this.extendLeftValue} and right by ${this.extendRightValue} days`, 'success'); 
-        this.closeExtendControls(); 
+      next: () => {
+        this.showMessage(`✓ Line extended left by ${this.extendLeftValue} and right by ${this.extendRightValue} days`, 'success');
+        this.closeExtendControls();
       },
-      error: (err) => { 
-        console.error('Extension failed:', err); 
-        this.refreshLinesFromServer(); 
-        this.showMessage('Failed to extend line.', 'error'); 
+      error: (err) => {
+        console.error('Extension failed:', err);
+        this.refreshLinesFromServer();
+        this.showMessage('Failed to extend line.', 'error');
       }
     });
   }
@@ -1381,38 +1371,38 @@ duplicateSelectedLine(): void {
       this.showMessage('Select a line first.', 'info');
       return;
     }
-    const original = this.selectedLineOwner === 'user' 
-      ? this.userLines.find(l => l.id === this.selectedLineId) 
+    const original = this.selectedLineOwner === 'user'
+      ? this.userLines.find(l => l.id === this.selectedLineId)
       : this.adminLines.find(l => l.id === this.selectedLineId);
     if (!original) return;
 
-    const duplicatedLine: DrawingLine = { 
-      ...original, 
-      id: uuidv4(), 
-      type: 'user', 
-      color: '#4ECDC4', 
-      createdAt: new Date() 
+    const duplicatedLine: DrawingLine = {
+      ...original,
+      id: uuidv4(),
+      type: 'user',
+      color: '#4ECDC4',
+      createdAt: new Date()
     };
-    
+
     this.drawingService.saveUserLine(this.testId, duplicatedLine).subscribe({
       next: (savedLine: any) => {
         const newLine = Array.isArray(savedLine) ? savedLine[0] : savedLine;
         if (newLine) {
           this.userLines.push(newLine);
-          this.selectedLineId = newLine.id;
+          this.selectedLineId    = newLine.id;
           this.selectedLineOwner = 'user';
           this.renderLines();
           this.drawHandles();
-          this.extendingLineId = newLine.id;
+          this.extendingLineId  = newLine.id;
           this.showExtendControls = true;
-          this.extendLeftValue = 0;
+          this.extendLeftValue  = 0;
           this.extendRightValue = 0;
           this.showMessage('✓ Line duplicated! Now extend it manually.', 'success');
         }
       },
-      error: (err) => { 
-        console.error('Duplicate failed:', err); 
-        this.showMessage('Failed to duplicate line.', 'error'); 
+      error: (err) => {
+        console.error('Duplicate failed:', err);
+        this.showMessage('Failed to duplicate line.', 'error');
       }
     });
   }
@@ -1420,7 +1410,7 @@ duplicateSelectedLine(): void {
   // ==================== COORDINATE CONVERSION ====================
   private screenToChartPoint(sp: ScreenPoint): Point | null {
     try {
-      const time = this.chart.timeScale().coordinateToTime(sp.x) as number | null;
+      const time  = this.chart.timeScale().coordinateToTime(sp.x) as number | null;
       const price = this.candlestickSeries.coordinateToPrice(sp.y) as number | null;
 
       if (time == null || price == null) return null;
@@ -1455,6 +1445,19 @@ duplicateSelectedLine(): void {
         this.drawHandles();
       });
 
+    if (this.userRole !== 'admin') {
+      await this.drawingService.clearAllUserLines(this.testId).toPromise();
+      this.drawingService.clearMatchedLines(this.testId);
+      this.userLines    = [];
+      this.matchedCount = 0;
+    }
+
+    this.drawingService.getUserLines(this.testId).subscribe(lines => {
+      if (!this.isResetting) this.userLines = lines || [];
+      this.renderLines();
+      this.drawHandles();
+    });
+
     if (this.userRole === 'admin') {
       this.drawingService.getAdminLines(this.testId)
         .pipe(takeUntil(this.destroy$))
@@ -1465,12 +1468,11 @@ duplicateSelectedLine(): void {
           this.drawHandles();
         });
     } else {
-      // Count admin lines for progress display without revealing them
       this.drawingService.getAdminLines(this.testId)
         .pipe(takeUntil(this.destroy$))
         .subscribe(lines => {
           this.totalAdminLines = (lines || []).length;
-          this.matchedCount = this.drawingService.getMatchedLines(this.testId).size;
+          this.matchedCount    = this.drawingService.getMatchedLines(this.testId).size;
         });
     }
   }
@@ -1485,16 +1487,22 @@ duplicateSelectedLine(): void {
     let base = 24000;
     const start = new Date();
     start.setMonth(start.getMonth() - 3);
+
+    const rand = this.seededRandom(this.testId);
+
     for (let i = 0; i < 90; i++) {
-      base = Math.max(22000, Math.min(25000, base + (Math.random() - 0.5) * 100));
+      const change = (rand() - 0.5) * 100;
+      base = Math.max(22000, Math.min(25000, base + change));
+
       const d = new Date(start);
       d.setDate(start.getDate() + i);
-      data.push({ 
-        time: Math.floor(d.getTime() / 1000), 
-        open: base, 
-        high: base + Math.random() * 80, 
-        low: base - Math.random() * 80, 
-        close: base + (Math.random() - 0.5) * 60 
+
+      data.push({
+        time:  Math.floor(d.getTime() / 1000),
+        open:  base,
+        high:  base + rand() * 80,
+        low:   base - rand() * 80,
+        close: base + (rand() - 0.5) * 60,
       });
     }
     return data;
@@ -1539,7 +1547,6 @@ duplicateSelectedLine(): void {
         this.cancelDrawing();
         this.showMessage('Drawing cancelled', 'info');
       }
-      // Always fall through to select tool on Escape
       if (this.activeTool !== 'select') {
         this.setActiveTool('select');
         this.showMessage('Select tool active', 'info');
@@ -1566,6 +1573,10 @@ duplicateSelectedLine(): void {
     if (event.ctrlKey && event.key === 'e' && this.activeTool === 'select' && this.selectedLineId) {
       event.preventDefault();
       this.showExtensionControls();
+    }
+    // Shortcut: H key → straight line tool
+    if (event.key === 'h' && !event.ctrlKey && !event.altKey) {
+      this.setActiveTool('straightline');
     }
   }
 }
