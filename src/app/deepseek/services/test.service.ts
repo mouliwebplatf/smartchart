@@ -9,26 +9,6 @@ export class TestService {
   private testsSubject: BehaviorSubject<Test[]>;
   public tests: Observable<Test[]>;
 
-  // Mock chart data generator
-  // private generateMockChartData(): any[] {
-  //   const data = [];
-  //   let basePrice = 100;
-  //   for (let i = 0; i < 100; i++) {
-  //     const change = (Math.random() - 0.5) * 4;
-  //     basePrice += change;
-  //     data.push({
-  //       x: new Date(Date.now() - (100 - i) * 3600000),
-  //       y: [
-  //         basePrice,
-  //         basePrice + Math.random() * 2,
-  //         basePrice - Math.random() * 2,
-  //         basePrice + (Math.random() - 0.5) * 1.5
-  //       ]
-  //     });
-  //   }
-  //   return data;
-  // }
-
   private mockTests: Test[] = [
     {
       id: 1,

@@ -1,4 +1,4 @@
-// chart.component.scss — Complete styles with drag handles
+// chart.component.scss — Complete styles with drag handles + straight-line tool
 
 :host {
   --bg: #1e222d;
@@ -173,11 +173,11 @@
     border-color: var(--accent);
     color: var(--accent);
   }
-  &.delete:not(:disabled):hover { color: var(--danger); border-color: var(--danger); }
-  &.duplicate:not(:disabled):hover { color: var(--accent-warn); border-color: var(--accent-warn); }
-  &.duplicate-extend:not(:disabled):hover { color: var(--accent); border-color: var(--accent); }
-  &.reset:not(:disabled):hover { color: var(--danger); border-color: var(--danger); }
-  &.save:not(:disabled):hover { color: var(--success); border-color: var(--success); }
+  &.delete:not(:disabled):hover         { color: var(--danger);      border-color: var(--danger); }
+  &.duplicate:not(:disabled):hover      { color: var(--accent-warn); border-color: var(--accent-warn); }
+  &.duplicate-extend:not(:disabled):hover { color: var(--accent);    border-color: var(--accent); }
+  &.reset:not(:disabled):hover          { color: var(--danger);      border-color: var(--danger); }
+  &.save:not(:disabled):hover           { color: var(--success);     border-color: var(--success); }
   &:disabled { opacity: .35; cursor: not-allowed; }
 }
 
@@ -212,17 +212,24 @@
   }
   .info-row {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 5px;
     color: var(--text-muted);
     margin-bottom: 5px;
-    line-height: 1.3;
+    line-height: 1.4;
   }
   .info-icon {
     font-size: 11px;
     min-width: 18px;
     text-align: center;
     color: var(--text);
+    margin-top: 1px;
+  }
+
+  // Straight-line hint: accent border to distinguish it
+  &.straightline-hint {
+    border-color: rgba(78,205,196,.4);
+    .info-title { color: var(--accent); }
   }
 }
 
@@ -236,7 +243,7 @@
   width: 100%;
   height: 600px;
   &.cursor-crosshair { cursor: crosshair; }
-  &.cursor-pointer { cursor: default; }
+  &.cursor-pointer   { cursor: default; }
 }
 
 .handle-canvas {
@@ -264,11 +271,12 @@
   backdrop-filter: blur(8px);
   animation: fadeIn .2s ease;
 
-  &.success { background: rgba(0,183,70,.18); border: 1px solid #00B746; color: #00d854; }
-  &.error { background: rgba(239,64,60,.18); border: 1px solid #EF403C; color: #ff6b68; }
-  &.info { background: rgba(78,205,196,.12); border: 1px solid var(--accent); color: var(--accent); }
+  &.success { background: rgba(0,183,70,.18);  border: 1px solid #00B746; color: #00d854; }
+  &.error   { background: rgba(239,64,60,.18); border: 1px solid #EF403C; color: #ff6b68; }
+  &.info    { background: rgba(78,205,196,.12); border: 1px solid var(--accent); color: var(--accent); }
 }
 
+// ── Drawing / status badges ─────────────────────────────────────────────────
 .drawing-badge {
   position: absolute;
   top: 16px;
@@ -291,32 +299,42 @@
     background: var(--accent);
     animation: pulse 1.2s ease infinite;
   }
+
+  // Straight-line active badge uses a distinct teal-green colour
+  &.straightline-active {
+    border-color: #4ECDC4;
+    color: #4ECDC4;
+    background: rgba(78,205,196,.1);
+
+    .straightline-pulse {
+      background: #4ECDC4;
+      animation: pulse 0.9s ease infinite;
+    }
+  }
 }
 
+// ── Extension overlay ───────────────────────────────────────────────────────
 .extend-overlay {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.6);
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,.6);
   backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 10000;
-  animation: fadeIn 0.2s ease;
+  animation: fadeIn .2s ease;
 }
 
 .extend-panel {
   background: var(--surface);
   border-radius: 12px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 20px 60px rgba(0,0,0,.5);
   min-width: 420px;
   max-width: 500px;
   border: 1px solid var(--border);
-  animation: slideUp 0.2s ease;
-  
+  animation: slideUp .2s ease;
+
   .extend-header {
     display: flex;
     justify-content: space-between;
@@ -330,9 +348,9 @@
       &:hover { color: var(--danger); }
     }
   }
-  
+
   .extend-content { padding: 24px; }
-  
+
   .extend-control-group {
     margin-bottom: 28px;
     label { display: block; margin-bottom: 10px; font-weight: 500; color: var(--text); font-size: 13px; }
@@ -354,19 +372,19 @@
       .btn-small {
         padding: 4px 12px; font-size: 11px; background: var(--surface2);
         border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
-        color: var(--text); transition: all 0.2s;
+        color: var(--text); transition: all .2s;
         &:hover { background: var(--border); border-color: var(--accent); }
       }
     }
   }
-  
+
   .extend-actions {
     display: flex; gap: 12px; margin-top: 28px; padding-top: 20px;
     border-top: 1px solid var(--border);
     button {
       flex: 1; padding: 10px 16px; border: none; border-radius: 6px;
-      font-weight: 600; cursor: pointer; font-size: 13px; transition: all 0.2s;
-      &.btn-apply { background: var(--accent); color: #1e222d; &:hover { background: #5dd6ce; transform: translateY(-1px); } }
+      font-weight: 600; cursor: pointer; font-size: 13px; transition: all .2s;
+      &.btn-apply  { background: var(--accent); color: #1e222d; &:hover { background: #5dd6ce; transform: translateY(-1px); } }
       &.btn-cancel { background: var(--surface2); color: var(--text); border: 1px solid var(--border); &:hover { background: var(--border); } }
     }
   }
@@ -379,6 +397,7 @@
   .extend-control-group .button-group .btn-small { background: #f0f0f0; border-color: #e0e0e0; color: #333333; &:hover { background: #e0e0e0; } }
 }
 
+// ── Instructions footer ─────────────────────────────────────────────────────
 .instructions {
   padding: 14px 20px;
   background: var(--surface);
@@ -391,38 +410,35 @@
 }
 
 kbd {
-  display: inline-block; padding: 1px 5px; border: 1px solid var(--border);
-  border-radius: 3px; background: var(--surface2); font-family: inherit; font-size: 10px;
+  display: inline-block; padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 3px; background: var(--surface2);
+  font-family: inherit; font-size: 10px;
 }
 
+// ── Animations ──────────────────────────────────────────────────────────────
 @keyframes fadeIn {
   from { opacity: 0; transform: translateX(-50%) translateY(-6px); }
-  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
 
 @keyframes slideUp {
   from { opacity: 0; transform: translateY(20px); }
-  to { opacity: 1; transform: translateY(0); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes pulse {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50% { transform: scale(1.5); opacity: .5; }
+  0%, 100% { transform: scale(1);   opacity: 1; }
+  50%       { transform: scale(1.5); opacity: .5; }
 }
 
+// ── Scrollbar ───────────────────────────────────────────────────────────────
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
-.handle-canvas {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: auto; // Keep this as auto to detect handle clicks
-  z-index: 10;
-}
+
+// ── Progress / complete badges ──────────────────────────────────────────────
 .progress-badge {
   position: absolute;
   top: 16px;
@@ -432,7 +448,7 @@ kbd {
   padding: 6px 16px;
   border-radius: 20px;
   font-size: 12px;
-  background: rgba(30, 34, 45, 0.85);
+  background: rgba(30,34,45,.85);
   border: 1px solid var(--accent);
   color: var(--accent);
   display: flex;
@@ -443,15 +459,14 @@ kbd {
 
 .complete-banner {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
+  top: 50%; left: 50%;
+  transform: translate(-50%,-50%);
   z-index: 30;
   padding: 20px 40px;
   border-radius: 12px;
   font-size: 18px;
   font-weight: 700;
-  background: rgba(0, 183, 70, 0.18);
+  background: rgba(0,183,70,.18);
   border: 2px solid #00B746;
   color: #00d854;
   box-shadow: var(--shadow);
@@ -459,8 +474,10 @@ kbd {
   pointer-events: none;
   animation: fadeIn .3s ease;
 }
+
+// ── Shift-lock hint ──────────────────────────────────────────────────────────
 .shift-hint {
-  top: 52px; // below the main drawing badge
+  top: 52px;
   border-color: var(--accent-warn);
   color: var(--accent-warn);
 }

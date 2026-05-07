@@ -1,4 +1,4 @@
-<!-- chart.component.html — Enhanced with handle overlay canvas, duplicate button, Ctrl+D hint -->
+<!-- chart.component.html -->
 <div class="chart-page" [class.light-theme]="currentTheme === 'light'">
 
   <!-- ══════════════ HEADER ══════════════ -->
@@ -47,6 +47,7 @@
       <div class="toolbar-section">
         <div class="toolbar-title">Drawing</div>
 
+        <!-- Trend Line -->
         <button class="tool-btn" [class.active]="activeTool === 'trendline'"
                 (click)="setActiveTool('trendline')" title="Draw Trend Line">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -56,6 +57,21 @@
           </svg>
           <span>Line</span>
         </button>
+
+        <!-- ── Straight Line (new) ── -->
+        <button class="tool-btn" [class.active]="activeTool === 'straightline'"
+                (click)="setActiveTool('straightline')"
+                title="Straight Horizontal Line — single click, spans full width (H)">
+          <!-- Icon: a perfectly horizontal line with tiny end-caps -->
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="2"  y1="12" x2="22" y2="12"/>
+            <line x1="2"  y1="9"  x2="2"  y2="15"/>
+            <line x1="22" y1="9"  x2="22" y2="15"/>
+          </svg>
+          <span>Straight</span>
+          <span class="kbd-hint">H</span>
+        </button>
+
       </div>
 
       <div class="toolbar-divider"></div>
@@ -157,6 +173,21 @@
           <span>Del to remove</span>
         </div>
       </div>
+
+      <!-- ── Straight-line hint panel ── -->
+      <div class="selection-info straightline-hint"
+           *ngIf="activeTool === 'straightline'">
+        <div class="info-title">Straight Line</div>
+        <div class="info-row">
+          <span class="info-icon">↵</span>
+          <span>Single click places a full-width horizontal line at that price</span>
+        </div>
+        <div class="info-row">
+          <span class="info-icon">⇥</span>
+          <span>Switch to Select to drag it up/down</span>
+        </div>
+      </div>
+
     </div>
 
     <!-- ══════════════ CHART AREA ══════════════ -->
@@ -176,6 +207,12 @@
         <span class="pulse"></span> Click to set end point &nbsp;·&nbsp; Esc to cancel
       </div>
 
+      <!-- Straight-line crosshair badge -->
+      <div class="drawing-badge straightline-active" *ngIf="activeTool === 'straightline' && !isDrawing">
+        <span class="pulse straightline-pulse"></span>
+        Click anywhere on the chart to place a full-width line
+      </div>
+
       <!-- LW Chart host -->
       <div #chartContainer class="chart-container"
            [class.cursor-crosshair]="activeTool !== 'select'"
@@ -184,33 +221,33 @@
       <!-- Handle overlay canvas for drag handles -->
       <canvas #handleCanvas class="handle-canvas"
         [style.pointer-events]="activeTool === 'select' && cursorIsOverInteractable ? 'auto' : 'none'">
-</canvas>
+      </canvas>
     </div>
   </div>
 
-  <!-- ══════════════ EXTENSION CONTROL PANEL (Optional) ══════════════ -->
+  <!-- ══════════════ EXTENSION CONTROL PANEL ══════════════ -->
   <div class="extend-overlay" *ngIf="showExtendControls">
     <div class="extend-panel">
       <div class="extend-header">
         <h3>📏 Extend Line</h3>
         <button class="close-btn" (click)="closeExtendControls()">✕</button>
       </div>
-      
+
       <div class="extend-content">
         <div class="extend-control-group">
           <label>Extend Left (days)</label>
           <div class="slider-container">
-            <input 
-              type="range" 
-              [(ngModel)]="extendLeftValue" 
-              min="0" 
-              max="100" 
+            <input
+              type="range"
+              [(ngModel)]="extendLeftValue"
+              min="0"
+              max="100"
               step="1"
               class="extend-slider">
             <span class="value-display">{{ extendLeftValue }} days</span>
           </div>
           <div class="button-group">
-            <button (click)="extendLeftValue = 0" class="btn-small">Reset</button>
+            <button (click)="extendLeftValue = 0"  class="btn-small">Reset</button>
             <button (click)="extendLeftValue = 10" class="btn-small">+10</button>
             <button (click)="extendLeftValue = 30" class="btn-small">+30</button>
           </div>
@@ -219,17 +256,17 @@
         <div class="extend-control-group">
           <label>Extend Right (days)</label>
           <div class="slider-container">
-            <input 
-              type="range" 
-              [(ngModel)]="extendRightValue" 
-              min="0" 
-              max="100" 
+            <input
+              type="range"
+              [(ngModel)]="extendRightValue"
+              min="0"
+              max="100"
               step="1"
               class="extend-slider">
             <span class="value-display">{{ extendRightValue }} days</span>
           </div>
           <div class="button-group">
-            <button (click)="extendRightValue = 0" class="btn-small">Reset</button>
+            <button (click)="extendRightValue = 0"  class="btn-small">Reset</button>
             <button (click)="extendRightValue = 10" class="btn-small">+10</button>
             <button (click)="extendRightValue = 30" class="btn-small">+30</button>
           </div>
@@ -252,9 +289,10 @@
     <h3>📐 Drawing Guide</h3>
     <ul>
       <li><strong>Draw Line:</strong> Select Line tool → click start point → click end point</li>
-      <li><strong>Select / Move:</strong> Select tool → click a line to select → drag the body to translate</li>
+      <li><strong>Straight Line:</strong> Select Straight tool (<kbd>H</kbd>) → single click → full-width horizontal line placed instantly</li>
+      <li><strong>Select / Move:</strong> Select tool → click a line to select → drag body to translate</li>
       <li><strong>Extend / Shrink:</strong> Select a line → drag the <strong>◀ ▶ handles</strong> at each end</li>
-      <li><strong>Duplicate:</strong> Select a line → <kbd>Ctrl+D</kbd> or click the Duplicate button</li>
+      <li><strong>Duplicate:</strong> Select a line → <kbd>Ctrl+D</kbd> or click Duplicate button</li>
       <li><strong>Delete:</strong> Select a line → <kbd>Del</kbd> or click Delete button</li>
       <li><strong>Reset All:</strong> <kbd>Ctrl+R</kbd> to clear all lines</li>
       <li *ngIf="userRole === 'admin'"><strong>Admin:</strong> Draw lines then click "Save" to set correct answers</li>
@@ -262,16 +300,14 @@
     </ul>
   </div>
 </div>
+
+<!-- Progress badge -->
 <div class="progress-badge" *ngIf="userRole !== 'admin' && totalAdminLines > 0 && !testComplete">
   <span class="progress-icon">📍</span>
   {{ matchedCount }} / {{ totalAdminLines }} lines matched
 </div>
 
-<!-- Test complete banner -->
-<div class="complete-banner" *ngIf="testComplete">
-  🎉 Test Complete! All {{ totalAdminLines }} lines matched.
-</div>
-<!-- Shift-lock hint during handle drag -->
+<!-- Shift-lock hints during drawing / handle drag -->
 <div class="drawing-badge shift-hint"
      *ngIf="(isExtendingLeftHandle || isExtendingRightHandle) && shiftHeld">
   <span>🔒</span> Shift held — locked to original slope
