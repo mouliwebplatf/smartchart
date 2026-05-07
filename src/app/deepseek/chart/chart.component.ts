@@ -9,6 +9,7 @@ import { DrawingService } from '../services/drawing.service';
 import { AuthService } from '../services/auth.service';
 import { DrawingLine, Point, ScreenPoint, ThemeMode } from '../models/drawing.model';
 import { Subject, takeUntil } from 'rxjs';
+import { HttpClient } from '@angular/common/http';
 
 // ── Added 'straightline' to the union ──────────────────────────────────────
 type ToolMode = 'trendline' | 'hline' | 'vline' | 'ray' | 'straightline' | 'select';
@@ -105,6 +106,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   private isDoubleClick: boolean = false;
 
   constructor(
+    private http:HttpClient,
     private route: ActivatedRoute,
     private router: Router,
     private authService: AuthService,
@@ -1443,6 +1445,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
         this.userLines = lines || [];
         this.renderLines();
         this.drawHandles();
+        
       });
 
     if (this.userRole !== 'admin') {
@@ -1477,11 +1480,48 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     }
   }
 
-  private async loadChartData(): Promise<void> {
-    this.chartData = this.generateMockData();
-    this.filterChartData();
-  }
+  // private async loadChartData(): Promise<void> {
+  //   this.chartData = this.generateMockData();
+  //   this.filterChartData();
+  // }
+private async loadChartData(): Promise<void> {
 
+  this.http.get<any>('assets/data.json')
+    .subscribe((apiData) => {
+
+      const timeSeries = apiData["Time Series (5min)"];
+
+      this.chartData = Object.keys(timeSeries)
+        .map((date) => {
+
+          const candle = timeSeries[date];
+
+          const base = Number(candle["1. open"]) * 1000;
+
+          return {
+            time: Math.floor(new Date(date).getTime() / 1000),
+            open: base,
+            high: base + Math.random() * 500,
+            low: base - Math.random() * 500,
+            close: base + (Math.random() - 0.5) * 300,
+          };
+
+        })
+        .sort((a, b) => a.time - b.time);
+
+      this.filterChartData();
+
+      this.chart.priceScale('right').applyOptions({
+        autoScale: true,
+        scaleMargins: {
+          top: 0.1,
+          bottom: 0.1
+        }
+      });
+
+    });
+
+}
   private generateMockData(): any[] {
     const data: any[] = [];
     let base = 24000;
@@ -1508,20 +1548,39 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     return data;
   }
 
+  // filterChartData(): void {
+  //   if (!this.candlestickSeries || !this.chartData.length) return;
+
+  //   this.candlestickSeries.setData(this.chartData);
+  //   this.chart.timeScale().fitContent();
+
+  //   const from = this.chartData[0].time;
+  //   const to   = this.chartData[this.chartData.length - 1].time;
+  //   const pad  = Math.round((to - from) * 0.08);
+  //   this.chart.timeScale().setVisibleRange({ from: from - pad, to: to + pad });
+
+  //   this.renderLines();
+  //   this.drawHandles();
+  // }
   filterChartData(): void {
-    if (!this.candlestickSeries || !this.chartData.length) return;
 
-    this.candlestickSeries.setData(this.chartData);
-    this.chart.timeScale().fitContent();
+  if (!this.candlestickSeries || !this.chartData.length) return;
 
-    const from = this.chartData[0].time;
-    const to   = this.chartData[this.chartData.length - 1].time;
-    const pad  = Math.round((to - from) * 0.08);
-    this.chart.timeScale().setVisibleRange({ from: from - pad, to: to + pad });
+  this.candlestickSeries.setData(this.chartData);
 
-    this.renderLines();
-    this.drawHandles();
-  }
+  this.chart.timeScale().fitContent();
+
+  // ZOOM CHART
+  const total = this.chartData.length;
+
+  this.chart.timeScale().setVisibleLogicalRange({
+    from: total - 50,
+    to: total
+  });
+
+  this.renderLines();
+  this.drawHandles();
+}
 
   onDurationChange(): void { this.filterChartData(); }
 
