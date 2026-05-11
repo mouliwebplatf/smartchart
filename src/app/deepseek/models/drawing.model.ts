@@ -1,7 +1,7 @@
 // drawing.model.ts — Enhanced with handle, drag, and duplicate support
 
 export type ThemeMode = 'dark' | 'light';
-export type LineTool = 'trendline' | 'hline' | 'vline' | 'ray' | 'select';
+export type LineTool = 'trendline' | 'hline' | 'vline' | 'ray' | 'select' | 'straightline';
 
 export interface Point {
   x: number;
@@ -27,7 +27,7 @@ export interface DrawingLine {
   tool: LineTool;
    // For duplicate tracking
   duplicateCount?: number;   // For duplicate color variation
-
+originalTool?: string;
 
   // Chart-coordinate anchors (persisted to DB)
   startTime: number;
