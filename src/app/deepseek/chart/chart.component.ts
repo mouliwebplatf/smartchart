@@ -1,4 +1,4 @@
-// chart.component.ts (REFACTORED - User-Side Validation Fix)
+// chart.component.ts (REFACTORED - User-Side Validation Fix + Hint Blink Support)
 import {
   Component, ElementRef, ViewChild,
   AfterViewInit, OnDestroy, HostListener,
@@ -26,7 +26,7 @@ type ToolMode = 'trendline' | 'hline' | 'vline' | 'ray' | 'straightline' | 'sele
   styleUrls: ['./chart.component.scss'],
 })
 export class ChartComponent implements AfterViewInit, OnDestroy {
-  // ── CRITICAL FIX #1: Unsubscribe from chart events ──
+  // ── Unsubscribe from chart events ──
   private chartClickSubscription: (() => void) | null = null;
   private chartCrosshairSubscription: (() => void) | null = null;
 
@@ -99,11 +99,27 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
 
   private themes = {
     light: { background: '#ffffff', textColor: '#333333', gridColor: '#e0e0e0', borderColor: '#d1d1d1' },
-    dark: { background: '#1e222d', textColor: '#d1d4dc', gridColor: '#2a2e39', borderColor: '#2a2e39' },
+    dark:  { background: '#1e222d', textColor: '#d1d4dc', gridColor: '#2a2e39', borderColor: '#2a2e39' },
   };
 
   private clickTimeout: any = null;
   private isDoubleClick: boolean = false;
+
+  // ── HINT BLINK STATE ──
+  // Tracks overlay series for each blinking admin line (adminLineId → lineSeries)
+  private hintBlinkSeries: Map<string, any> = new Map();
+  // Tracks which admin line IDs are currently mid-animation (prevents double-trigger)
+  private hintBlinkActive: Set<string> = new Set();
+  // Tracks which IDs were in range on the previous crosshair move
+  // Used to detect exit → re-arm the blink on next entry
+  private hintPrevInRange: Set<string> = new Set();
+  // IDs that have already blinked for the current range entry
+  // Cleared automatically when the line leaves range
+  private hintBlinkFired: Set<string> = new Set();
+
+  // ── VALIDATION FLASH STATE ──
+  private activeFlashInterval: any = null;
+  private activeFlashSeries: any   = null;
 
   constructor(
     private http: HttpClient,
@@ -117,7 +133,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   // ==================== LIFECYCLE ====================
 
   ngAfterViewInit(): void {
-    this.testId = Number(this.route.snapshot.paramMap.get('id'));
+    this.testId   = Number(this.route.snapshot.paramMap.get('id'));
     this.userRole = this.authService.getRole();
     this.testName = this.route.snapshot.queryParams['name'] || 'NIFTY 50';
 
@@ -141,13 +157,14 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    // Stop hint blinks first to prevent dangling intervals
+    this.stopAllHintBlinks();
+
     this.chartClickSubscription?.();
     this.chartCrosshairSubscription?.();
 
     if (this.chart) {
-      try {
-        this.chart.remove();
-      } catch (e) {
+      try { this.chart.remove(); } catch (e) {
         console.error('[Chart] Error removing chart:', e);
       }
     }
@@ -155,6 +172,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     this.destroy$.next();
     this.destroy$.complete();
     window.removeEventListener('resize', this.handleResize);
+
     if (this.animationFrameId) {
       cancelAnimationFrame(this.animationFrameId);
       this.animationFrameId = null;
@@ -182,12 +200,11 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
 
   private applyTheme(): void {
     if (!this.ensureChart()) return;
-
     const t = this.themes[this.currentTheme];
     this.chart.applyOptions({
-      layout: { background: { color: t.background }, textColor: t.textColor },
-      grid: { vertLines: { color: t.gridColor }, horzLines: { color: t.gridColor } },
-      timeScale: { borderColor: t.borderColor },
+      layout:         { background: { color: t.background }, textColor: t.textColor },
+      grid:           { vertLines: { color: t.gridColor }, horzLines: { color: t.gridColor } },
+      timeScale:      { borderColor: t.borderColor },
       rightPriceScale: { borderColor: t.borderColor },
     });
     this.renderLines();
@@ -222,37 +239,63 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     const t = this.themes[this.currentTheme];
 
     this.chart = LightweightCharts.createChart(container, {
-      width: container.clientWidth,
+      width:  container.clientWidth,
       height: 600,
-      layout: { background: { color: t.background }, textColor: t.textColor, fontFamily: 'Arial', fontSize: 12 },
-      grid: { vertLines: { color: t.gridColor, style: 1 }, horzLines: { color: t.gridColor, style: 1 } },
+      layout: {
+        background:  { color: t.background },
+        textColor:   t.textColor,
+        fontFamily:  'Arial',
+        fontSize:    12,
+      },
+      grid: {
+        vertLines: { color: t.gridColor, style: 1 },
+        horzLines: { color: t.gridColor, style: 1 },
+      },
       timeScale: {
-        timeVisible: true, secondsVisible: false, borderVisible: true, borderColor: t.borderColor,
-        fixLeftEdge: false, fixRightEdge: false, rightOffset: 5,
+        timeVisible:    true,
+        secondsVisible: false,
+        borderVisible:  true,
+        borderColor:    t.borderColor,
+        fixLeftEdge:    false,
+        fixRightEdge:   false,
+        rightOffset:    5,
         tickMarkFormatter: (time: any) => {
-          const d = new Date(time * 1000);
-          const y = d.getFullYear();
-          const m = String(d.getMonth() + 1).padStart(2, '0');
-          const day = String(d.getDate()).padStart(2, '0');
-          return `${y}-${m}-${day}`;
+          const d     = new Date(time * 1000);
+          const month = d.toLocaleString('en-US', { month: 'short' });
+          const day   = d.getDate();
+          return `${month} ${day}`;
         },
       },
-      rightPriceScale: { visible: true, autoScale: true, borderVisible: true, borderColor: t.borderColor, scaleMargins: { top: 0.1, bottom: 0.1 } },
+      rightPriceScale: {
+        visible:       true,
+        autoScale:     true,
+        borderVisible: true,
+        borderColor:   t.borderColor,
+        scaleMargins:  { top: 0.1, bottom: 0.1 },
+      },
       leftPriceScale: { visible: false },
       crosshair: {
-        mode: 1,
+        mode:     1,
         vertLine: { color: '#758696', width: 1, style: 2, visible: true, labelVisible: true },
         horzLine: { color: '#758696', width: 1, style: 2, visible: true, labelVisible: true },
       },
       handleScroll: { vertTouchDrag: true, horzTouchDrag: true, mouseWheel: true, pressedMouseMove: true },
-      handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+      handleScale:  { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
     });
 
     this.candlestickSeries = this.chart.addCandlestickSeries({
-      upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
-      wickUpColor: '#26a69a', wickDownColor: '#ef5350',
-      priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
-      priceScaleId: 'right', priceLineVisible: false, lastValueVisible: true,
+      upColor:          '#26a69a',
+      downColor:        '#ef5350',
+      borderVisible:    false,
+      wickUpColor:      '#26a69a',
+      wickDownColor:    '#ef5350',
+      priceFormatter:   (price: number) => price.toLocaleString('en-IN', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }),
+      priceScaleId:       'right',
+      priceLineVisible:   false,
+      lastValueVisible:   true,
     });
 
     this.chart.priceScale('right').applyOptions({ visible: true, autoScale: true, mode: 0 });
@@ -266,18 +309,17 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       if (!param?.point) return;
       if (this.clickTimeout) {
         clearTimeout(this.clickTimeout);
-        this.clickTimeout = null;
-        this.isDoubleClick = true;
+        this.clickTimeout    = null;
+        this.isDoubleClick   = true;
         return;
       }
       this.isDoubleClick = false;
-      this.clickTimeout = setTimeout(() => {
+      this.clickTimeout  = setTimeout(() => {
         this.clickTimeout = null;
         if (this.isDoubleClick) {
           this.isDoubleClick = false;
           return;
         }
-
         if (this.activeTool === 'select') {
           if (this.dragDistance <= 5) this.handleSelectClick(param);
           this.dragDistance = 0;
@@ -308,17 +350,17 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   // ==================== HANDLE CANVAS ====================
 
   private setupHandleCanvas(): void {
-    const canvas = this.handleCanvas?.nativeElement;
+    const canvas    = this.handleCanvas?.nativeElement;
     const container = this.chartContainer?.nativeElement;
     if (!canvas || !container) return;
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = container.clientWidth * dpr;
-    canvas.height = container.clientHeight * dpr;
-    canvas.style.width = container.clientWidth + 'px';
-    canvas.style.height = container.clientHeight + 'px';
+    const dpr        = window.devicePixelRatio || 1;
+    canvas.width     = container.clientWidth  * dpr;
+    canvas.height    = container.clientHeight * dpr;
+    canvas.style.width    = container.clientWidth  + 'px';
+    canvas.style.height   = container.clientHeight + 'px';
     canvas.style.position = 'absolute';
-    canvas.style.top = '0';
-    canvas.style.left = '0';
+    canvas.style.top      = '0';
+    canvas.style.left     = '0';
     canvas.style.pointerEvents = 'none';
     this.handleCanvasContext = canvas.getContext('2d');
     this.handleCanvasContext?.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -326,15 +368,11 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   }
 
   private startHandleRendering(): void {
-    if (this.animationFrameId) {
-      cancelAnimationFrame(this.animationFrameId);
-    }
-
+    if (this.animationFrameId) cancelAnimationFrame(this.animationFrameId);
     const draw = () => {
       this.drawHandles();
       this.animationFrameId = requestAnimationFrame(draw);
     };
-
     this.animationFrameId = requestAnimationFrame(draw);
   }
 
@@ -345,16 +383,10 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     }
     const line = this.userLines.find(l => l.id === this.selectedLineId)
       ?? this.adminLines.find(l => l.id === this.selectedLineId);
-    if (!line) {
-      this.clearHandles();
-      return;
-    }
+    if (!line) { this.clearHandles(); return; }
     const sp = this.chartToScreenPoint(line.startTime, line.startPrice);
-    const ep = this.chartToScreenPoint(line.endTime, line.endPrice);
-    if (!sp || !ep) {
-      this.clearHandles();
-      return;
-    }
+    const ep = this.chartToScreenPoint(line.endTime,   line.endPrice);
+    if (!sp || !ep) { this.clearHandles(); return; }
     this.clearHandles();
     this.drawHandle(sp.x, sp.y, 'left');
     this.drawHandle(ep.x, ep.y, 'right');
@@ -362,10 +394,10 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
 
   private drawHandle(x: number, y: number, type: string): void {
     if (!this.handleCanvasContext) return;
-    const ctx = this.handleCanvasContext;
+    const ctx      = this.handleCanvasContext;
     const isActive = (this.isExtendingLeftHandle && type === 'left') ||
-      (this.isExtendingRightHandle && type === 'right');
-    const radius = isActive ? 8 : 6;
+                     (this.isExtendingRightHandle && type === 'right');
+    const radius   = isActive ? 8 : 6;
     ctx.save();
     ctx.beginPath();
     ctx.arc(x, y, radius + 2, 0, Math.PI * 2);
@@ -378,7 +410,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     ctx.beginPath();
     ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.strokeStyle = '#FFFFFF';
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth   = 1.5;
     ctx.stroke();
     ctx.restore();
   }
@@ -390,13 +422,13 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   }
 
   private updateCanvasSize(): void {
-    const canvas = this.handleCanvas?.nativeElement;
+    const canvas    = this.handleCanvas?.nativeElement;
     const container = this.chartContainer?.nativeElement;
     if (!canvas || !container) return;
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = container.clientWidth * dpr;
+    const dpr     = window.devicePixelRatio || 1;
+    canvas.width  = container.clientWidth  * dpr;
     canvas.height = container.clientHeight * dpr;
-    canvas.style.width = container.clientWidth + 'px';
+    canvas.style.width  = container.clientWidth  + 'px';
     canvas.style.height = container.clientHeight + 'px';
     this.handleCanvasContext?.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.drawHandles();
@@ -408,9 +440,9 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       ?? this.adminLines.find(l => l.id === this.selectedLineId);
     if (!line) return null;
     const s = this.chartToScreenPoint(line.startTime, line.startPrice);
-    const e = this.chartToScreenPoint(line.endTime, line.endPrice);
+    const e = this.chartToScreenPoint(line.endTime,   line.endPrice);
     if (!s || !e) return null;
-    if (Math.hypot(sp.x - s.x, sp.y - s.y) < 15) return { type: 'left', lineId: line.id };
+    if (Math.hypot(sp.x - s.x, sp.y - s.y) < 15) return { type: 'left',  lineId: line.id };
     if (Math.hypot(sp.x - e.x, sp.y - e.y) < 15) return { type: 'right', lineId: line.id };
     return null;
   }
@@ -421,7 +453,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     this.cancelDrawing();
     this.activeTool = tool;
     if (tool !== 'select') {
-      this.selectedLineId = null;
+      this.selectedLineId    = null;
       this.selectedLineOwner = null;
       this.clearHandles();
     }
@@ -432,13 +464,13 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   // ==================== DRAWING ====================
 
   private cancelDrawing(): void {
-    this.isDrawing = false;
-    this.hasFirstPoint = false;
+    this.isDrawing        = false;
+    this.hasFirstPoint    = false;
     this.drawingStartPoint = null;
+    // Stop all hint blinks when drawing is cancelled
+    this.stopAllHintBlinks();
     if (this.previewSeries) {
-      try {
-        this.chart.removeSeries(this.previewSeries);
-      } catch { }
+      try { this.chart.removeSeries(this.previewSeries); } catch { }
       this.previewSeries = null;
     }
   }
@@ -459,23 +491,23 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     }
 
     if (!this.isDrawing) {
-      this.isDrawing = true;
+      this.isDrawing         = true;
       this.drawingStartPoint = cp;
 
-      let previewColor = '#4ECDC4';
+      let previewColor     = '#4ECDC4';
       let previewLineStyle = 0;
 
       if (this.activeTool === 'hline') {
-        previewColor = '#FFFFFF';
+        previewColor     = '#FFFFFF';
         previewLineStyle = 1;
       }
 
       this.previewSeries = this.chart.addLineSeries({
-        color: previewColor,
-        lineWidth: 2,
-        lineStyle: previewLineStyle,
-        priceLineVisible: false,
-        lastValueVisible: false,
+        color:             previewColor,
+        lineWidth:         2,
+        lineStyle:         previewLineStyle,
+        priceLineVisible:  false,
+        lastValueVisible:  false,
       });
       this.hasFirstPoint = true;
     } else {
@@ -488,6 +520,9 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
 
   private finishDrawing(endPoint: Point): void {
     if (this.testComplete && this.userRole !== 'admin') return;
+
+    // Stop all hint blinks immediately — validation flash takes over
+    this.stopAllHintBlinks();
 
     let start: Point, end: Point;
 
@@ -507,17 +542,17 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     }
 
     const newLine: DrawingLine = {
-      id: uuidv4(),
-      testId: this.testId,
-      type: this.userRole === 'admin' ? 'admin' : 'user',
-      tool: this.activeTool === 'straightline' ? 'straightline' : this.activeTool as any,
+      id:           uuidv4(),
+      testId:       this.testId,
+      type:         this.userRole === 'admin' ? 'admin' : 'user',
+      tool:         this.activeTool === 'straightline' ? 'straightline' : this.activeTool as any,
       originalTool: this.activeTool,
-      startX: start.x, startY: start.y,
-      endX: end.x,   endY: end.y,
-      startTime: start.time, startPrice: start.price,
-      endTime: end.time,   endPrice: end.price,
-      color: this.userRole === 'admin' ? '#FF6B6B' : '#FFFFFF',
-      createdAt: new Date(),
+      startX:       start.x,   startY: start.y,
+      endX:         end.x,     endY:   end.y,
+      startTime:    start.time, startPrice: start.price,
+      endTime:      end.time,   endPrice:   end.price,
+      color:        this.userRole === 'admin' ? '#FF6B6B' : '#FFFFFF',
+      createdAt:    new Date(),
     };
 
     if (this.activeTool === 'straightline') {
@@ -535,7 +570,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       this.renderLines();
       this.showMessage('✓ Admin line drawn. Click Save to persist.', 'success');
     } else {
-      // USER ROLE: Validate first, only add if correct
       this.validateAndSaveUserLine(newLine);
     }
   }
@@ -586,6 +620,16 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
           : [{ time: t2, value: end.price }, { time: t1, value: this.drawingStartPoint!.price }];
         this.previewSeries.setData(ordered);
       }
+
+      // ── HINT BLINKS: evaluate which admin lines to blink based on preview time range ──
+      // Only fires for user role; admin always sees their own lines directly.
+      if (this.userRole !== 'admin' && this.drawingStartPoint) {
+        this.updateHintBlinks(
+          this.drawingStartPoint.time,
+          cp.time
+        );
+      }
+
     } catch (err) {
       console.warn('[Chart] Preview update error', err);
     } finally {
@@ -595,7 +639,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
 
   private snapToAngle(start: Point, end: Point): Point {
     const ss = this.chartToScreenPoint(start.time, start.price);
-    const es = this.chartToScreenPoint(end.time, end.price);
+    const es = this.chartToScreenPoint(end.time,   end.price);
     if (!ss || !es) return end;
     const dx = es.x - ss.x, dy = es.y - ss.y;
     const nx = Math.abs(dx) >= Math.abs(dy) ? es.x : ss.x;
@@ -606,7 +650,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   private getExtendedPoints(start: Point, end: Point): any[] {
     const tr = this.chart.timeScale().getVisibleRange();
     if (!tr) return [];
-    const dt = end.time - start.time;
+    const dt = end.time  - start.time;
     const dp = end.price - start.price;
     if (dt === 0) return [{ time: start.time, value: start.price }];
     const m = dp / dt;
@@ -642,13 +686,13 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   private getLineAtPoint(sp: ScreenPoint): { id: string; owner: 'user' | 'admin' } | null {
     for (const line of this.userLines) {
       const a = this.chartToScreenPoint(line.startTime, line.startPrice);
-      const b = this.chartToScreenPoint(line.endTime, line.endPrice);
+      const b = this.chartToScreenPoint(line.endTime,   line.endPrice);
       if (a && b && this.distanceToSegment(sp, a, b) < 10) return { id: line.id, owner: 'user' };
     }
     if (this.userRole === 'admin') {
       for (const line of this.adminLines) {
         const a = this.chartToScreenPoint(line.startTime, line.startPrice);
-        const b = this.chartToScreenPoint(line.endTime, line.endPrice);
+        const b = this.chartToScreenPoint(line.endTime,   line.endPrice);
         if (a && b && this.distanceToSegment(sp, a, b) < 10) return { id: line.id, owner: 'admin' };
       }
     }
@@ -684,26 +728,25 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
 
     let smallPriceOffset = 5;
     if (this.chartData.length) {
-      const prices = this.chartData.flatMap((d: any) => [d.high, d.low]);
+      const prices     = this.chartData.flatMap((d: any) => [d.high, d.low]);
       smallPriceOffset = (Math.max(...prices) - Math.min(...prices)) * 0.01;
     }
 
     const duplicatedLine: DrawingLine = {
       ...original,
-      id: uuidv4(),
-      type: 'user',
-      color: '#00FF00',
-      startTime:  original.startTime,
-      endTime:    original.endTime,
-      startPrice: original.startPrice - smallPriceOffset,
-      endPrice:   original.endPrice   - smallPriceOffset,
-      createdAt:  new Date(),
+      id:           uuidv4(),
+      type:         'user',
+      color:        '#00FF00',
+      startTime:    original.startTime,
+      endTime:      original.endTime,
+      startPrice:   original.startPrice - smallPriceOffset,
+      endPrice:     original.endPrice   - smallPriceOffset,
+      createdAt:    new Date(),
       tool:         original.tool,
       originalTool: original.originalTool || original.tool,
     };
 
     if (this.userRole !== 'admin') {
-      // USER ROLE: Validate first
       const v = this.drawingService.validateUserLine(this.testId, duplicatedLine);
 
       if (!v.isValid) {
@@ -714,14 +757,12 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
         return;
       }
 
-      // VALID: Auto-snap coordinates
       const matchedAdminLine = v.correctLine!;
       duplicatedLine.startTime  = matchedAdminLine.startTime;
       duplicatedLine.startPrice = matchedAdminLine.startPrice;
       duplicatedLine.endTime    = matchedAdminLine.endTime;
       duplicatedLine.endPrice   = matchedAdminLine.endPrice;
 
-      // Add to UI immediately
       this.userLines.push(duplicatedLine);
       this.selectedLineId    = duplicatedLine.id;
       this.selectedLineOwner = 'user';
@@ -732,7 +773,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
         .subscribe({
           next: () => {
             this.matchedCount = this.drawingService.getMatchedLines(this.testId).size;
-
             if (v.remainingCount === 0) {
               this.testComplete = true;
               this.showMessage('🎉 All lines matched! Test complete!', 'success');
@@ -742,7 +782,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
                 'success'
               );
             }
-
             this.flashAdminLine(matchedAdminLine, 'success');
           },
           error: (err) => {
@@ -755,7 +794,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
         });
 
     } else {
-      // ADMIN ROLE: No validation, just duplicate
       this.adminLines.push(duplicatedLine);
       this.selectedLineId    = duplicatedLine.id;
       this.selectedLineOwner = 'admin';
@@ -872,8 +910,8 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     const curr = this.screenToChartPoint(sp);
     if (!curr || !this.dragStartPoint || !this.dragLineSnapshot) return;
 
-    const dt = curr.time  - this.dragStartPoint.time;
-    const dp = curr.price - this.dragStartPoint.price;
+    const dt   = curr.time  - this.dragStartPoint.time;
+    const dp   = curr.price - this.dragStartPoint.price;
     const snap = this.dragLineSnapshot;
 
     const line = this.selectedLineOwner === 'user'
@@ -901,7 +939,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       ?? this.adminLines.find(l => l.id === this.extendingLineIdHandle);
     if (!line) return;
 
-    if (this.isExtendingLeftHandle)  {
+    if (this.isExtendingLeftHandle) {
       line.startTime  = cp.time;
       line.startPrice = cp.price;
     } else if (this.isExtendingRightHandle) {
@@ -930,11 +968,11 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     this.isExtendingLeftHandle  = false;
     this.isExtendingRightHandle = false;
     this.extendingLineIdHandle  = null;
-    this.isDraggingLine  = false;
-    this.draggedLineId   = null;
+    this.isDraggingLine   = false;
+    this.draggedLineId    = null;
     this.dragLineSnapshot = null;
-    this.dragStartPoint  = null;
-    this.dragDistance    = 0;
+    this.dragStartPoint   = null;
+    this.dragDistance     = 0;
     this.renderLines();
   }
 
@@ -977,16 +1015,13 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
 
   private removeSeries(id: string): void {
     if (this.lineSeriesMap.has(id)) {
-      try {
-        this.chart.removeSeries(this.lineSeriesMap.get(id));
-      } catch { }
+      try { this.chart.removeSeries(this.lineSeriesMap.get(id)); } catch { }
       this.lineSeriesMap.delete(id);
     }
   }
 
   private renderLine(line: DrawingLine): void {
     if (!this.ensureChart()) return;
-
     try {
       const tr = this.chart.timeScale().getVisibleRange();
       if (!tr) return;
@@ -996,7 +1031,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       this.removeSeries(line.id);
 
       const isSelected = this.selectedLineId === line.id;
-      let color: string;
+      let color:     string;
       let width     = isSelected ? 3 : 2;
       let lineStyle = 0;
 
@@ -1092,7 +1127,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     if (!this.ensureChart()) return;
     try {
       const isSelected = this.selectedLineId === line.id;
-      let color: string;
+      let color:     string;
       let width     = isSelected ? 3 : 2;
       let lineStyle = 0;
 
@@ -1142,157 +1177,258 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     this.chart.timeScale().applyOptions({ visible: true });
   }
 
+  // ==================== HINT BLINK SYSTEM ====================
+
+  /**
+   * Main hint driver — called on every crosshair move while the user is drawing.
+   *
+   * Logic:
+   *  - Ask the service for all unmatched admin lines whose time range overlaps the preview
+   *  - Lines that WERE in range but are no longer → clear their "fired" flag (re-arm)
+   *  - Lines newly in range that haven't fired yet this entry → trigger 3-blink yellow hint
+   *  - Lines that are already correctly matched are excluded by the service automatically
+   */
+  private updateHintBlinks(
+    previewStartTime: number,
+    previewEndTime:   number
+  ): void {
+    if (!this.ensureChart()) return;
+
+    const inRangeLines = this.drawingService.getUnmatchedAdminLinesInTimeRange(
+      this.testId,
+      previewStartTime,
+      previewEndTime
+    );
+    const nowInRangeIds = new Set(inRangeLines.map(l => l.id));
+
+    // Lines that LEFT the range since the last move → re-arm them
+    for (const id of this.hintPrevInRange) {
+      if (!nowInRangeIds.has(id)) {
+        this.hintBlinkFired.delete(id); // left range → can blink again on next entry
+      }
+    }
+
+    // Lines newly IN range that haven't blinked yet for this entry → trigger
+    for (const al of inRangeLines) {
+      if (this.hintBlinkFired.has(al.id))  continue; // already blinked this entry
+      if (this.hintBlinkActive.has(al.id)) continue; // mid-animation right now
+      this.triggerHintBlink(al);
+    }
+
+    this.hintPrevInRange = nowInRangeIds;
+  }
+
+  /**
+   * Flashes a single admin line yellow (#FFD700) exactly 3 times at 300ms each.
+   *
+   * After the animation finishes:
+   *  - The overlay series is removed from the chart
+   *  - The line is marked "fired" so it won't blink again while still in range
+   *  - It re-arms automatically when the user moves out of the time zone
+   *
+   * Once an admin line is matched (correct answer), the service stops returning
+   * it from getUnmatchedAdminLinesInTimeRange, so it will NEVER blink again.
+   */
+  private triggerHintBlink(adminLine: DrawingLine): void {
+    if (!this.ensureChart()) return;
+
+    // Mark immediately to prevent double-trigger
+    this.hintBlinkActive.add(adminLine.id);
+    this.hintBlinkFired.add(adminLine.id);
+
+    // Remove any stale overlay series for this id
+    const stale = this.hintBlinkSeries.get(adminLine.id);
+    if (stale) {
+      try { this.chart.removeSeries(stale); } catch { }
+      this.hintBlinkSeries.delete(adminLine.id);
+    }
+
+    // Create the yellow overlay series
+    const series = this.chart.addLineSeries({
+      color:                  '#FFD700',
+      lineWidth:              3,
+      lineStyle:              0,
+      priceLineVisible:       false,
+      lastValueVisible:       false,
+      crosshairMarkerVisible: false,
+    });
+    series.setData([
+      { time: adminLine.startTime, value: adminLine.startPrice },
+      { time: adminLine.endTime,   value: adminLine.endPrice   },
+    ]);
+    this.hintBlinkSeries.set(adminLine.id, series);
+
+    // Blink 3 times: on(300ms) → off(300ms) → on → off → on → off → done
+    const BLINK_MS   = 300;
+    const BLINKS     = 3;
+    const totalTicks = BLINKS * 2; // on/off per blink = 6 ticks
+    let tick = 0;
+
+    const interval = setInterval(() => {
+      tick++;
+      try {
+        if (tick >= totalTicks) {
+          clearInterval(interval);
+          try { this.chart.removeSeries(series); } catch { }
+          this.hintBlinkSeries.delete(adminLine.id);
+          this.hintBlinkActive.delete(adminLine.id);
+          // hintBlinkFired stays SET — prevents re-blink while still in this range entry
+        } else {
+          // Even ticks = on (yellow), odd ticks = off (transparent)
+          series.applyOptions({
+            color: tick % 2 === 0 ? '#FFD700' : 'rgba(0,0,0,0)',
+          });
+        }
+      } catch {
+        clearInterval(interval);
+        this.hintBlinkSeries.delete(adminLine.id);
+        this.hintBlinkActive.delete(adminLine.id);
+      }
+    }, BLINK_MS);
+  }
+
+  /**
+   * Stops and removes ALL hint blink overlays and fully resets tracking state.
+   *
+   * Called when:
+   *  - User finishes drawing a line (2nd click) → validation flash takes over
+   *  - User presses Escape / cancels drawing
+   *  - Component is destroyed
+   */
+  private stopAllHintBlinks(): void {
+    for (const series of this.hintBlinkSeries.values()) {
+      try { this.chart.removeSeries(series); } catch { }
+    }
+    this.hintBlinkSeries.clear();
+    this.hintBlinkActive.clear();
+    this.hintBlinkFired.clear();
+    this.hintPrevInRange.clear();
+  }
+
   // ==================== VALIDATION ====================
 
   /**
-   * USER-SIDE VALIDATION - CRITICAL FIX
-   * 
+   * USER-SIDE VALIDATION
+   *
    * Process:
    * 1. Validate user line against admin reference lines (slope + price only)
-   * 2. If VALID: Auto-snap to matched admin line, add to UI, persist, show success + green flash
-   * 3. If INVALID: Show error, flash hint (orange) on correct admin line, DO NOT ADD to UI
-   * 
+   * 2. If VALID:   Auto-snap to matched admin line, add to UI, persist, show success + green flash
+   * 3. If INVALID: Show error, flash hint (orange) on correct admin line, DO NOT add to UI
+   *
    * The user's drawn line is NEVER displayed in an incorrect state.
    * Only validated (and snapped) lines appear on the chart.
    */
-private validateAndSaveUserLine(line: DrawingLine): void {
-  if (line.tool === 'straightline') {
-    console.warn('[Chart] Straight lines are not saved to database');
-    return;
-  }
+  private validateAndSaveUserLine(line: DrawingLine): void {
+    if (line.tool === 'straightline') {
+      console.warn('[Chart] Straight lines are not saved to database');
+      return;
+    }
 
-  // ── CRITICAL: Do NOT add to userLines yet — only add after validation passes ──
-  // Remove it if it was already inserted (defensive)
-  const existingIdx = this.userLines.findIndex(l => l.id === line.id);
-  if (existingIdx !== -1) this.userLines.splice(existingIdx, 1);
-  this.renderLines(); // Ensure the unvalidated line is NOT visible
-
-  const v = this.drawingService.validateUserLine(this.testId, line);
-
-  if (!v.isValid) {
-    // INVALID: Line stays removed from UI — never shown
+    // Defensively remove if already inserted
+    const existingIdx = this.userLines.findIndex(l => l.id === line.id);
+    if (existingIdx !== -1) this.userLines.splice(existingIdx, 1);
     this.renderLines();
 
-    const hintLine = v.correctLine
-      ?? this.drawingService.findAdminLineContainingTimeRange(this.testId, line);
+    const v = this.drawingService.validateUserLine(this.testId, line);
 
-    if (hintLine) {
-      // Flash only the portion of the admin line within the user's drawn time range
-      this.flashAdminLineInRange(hintLine, line, 'hint');
-      this.showMessage('✗ Close! But slope/price is incorrect. See the orange blinking line.', 'error');
-    } else {
-      this.showMessage('✗ No trend line in this range. Try a different area.', 'error');
+    if (!v.isValid) {
+      this.renderLines();
+
+      const hintLine = v.correctLine
+        ?? this.drawingService.findAdminLineContainingTimeRange(this.testId, line);
+
+      if (hintLine) {
+        this.flashAdminLineInRange(hintLine, line, 'hint');
+        this.showMessage('✗ Close! But slope/price is incorrect. See the orange blinking line.', 'error');
+      } else {
+        this.showMessage('✗ No trend line in this range. Try a different area.', 'error');
+      }
+      return;
     }
-    return;
+
+    // VALID — add to UI now
+    this.userLines.push({ ...line });
+    this.renderLines();
+
+    const matchedAdminLine = v.correctLine;
+    if (matchedAdminLine) {
+      this.flashAdminLineInRange(matchedAdminLine, line, 'success');
+    }
+
+    this.drawingService.saveUserLine(this.testId, line)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: () => {
+          this.matchedCount = this.drawingService.getMatchedLines(this.testId).size;
+          if (v.remainingCount === 0) {
+            this.testComplete = true;
+            this.showMessage('🎉 All lines matched! Test complete!', 'success');
+          } else {
+            this.showMessage(`✓ Correct! ${v.remainingCount} line(s) remaining.`, 'success');
+          }
+        },
+        error: (err) => {
+          console.error('[Validation] Save failed:', err);
+          const idx = this.userLines.findIndex(l => l.id === line.id);
+          if (idx !== -1) this.userLines.splice(idx, 1);
+          this.renderLines();
+          this.showMessage('Failed to save line.', 'error');
+        },
+      });
   }
 
-  // VALID: Add to UI now (first time, confirmed correct)
-  this.userLines.push({ ...line });
-  this.renderLines();
+  /**
+   * Blinks only the portion of an admin line that overlaps the user's drawn time range.
+   * Used for validation feedback — hint (orange) or success (green).
+   */
+  private flashAdminLineInRange(
+    adminLine: DrawingLine,
+    userLine: DrawingLine,
+    mode: 'hint' | 'success'
+  ): void {
+    if (!this.ensureChart()) return;
 
-  const matchedAdminLine = v.correctLine;
-  if (matchedAdminLine) {
-    // Flash the matched admin line clipped to the user's drawn range
-    this.flashAdminLineInRange(matchedAdminLine, line, 'success');
+    const clipStart  = userLine.startTime;
+    const clipEnd    = userLine.endTime;
+    const rangeStart = Math.min(clipStart, clipEnd);
+    const rangeEnd   = Math.max(clipStart, clipEnd);
+
+    const adminRangeStart = Math.min(adminLine.startTime, adminLine.endTime);
+    const adminRangeEnd   = Math.max(adminLine.startTime, adminLine.endTime);
+
+    if (rangeEnd < adminRangeStart || rangeStart > adminRangeEnd) return;
+
+    const adminDt        = adminLine.endTime - adminLine.startTime;
+    const adminSlope     = adminDt !== 0 ? (adminLine.endPrice - adminLine.startPrice) / adminDt : 0;
+    const adminIntercept = adminLine.startPrice - adminSlope * adminLine.startTime;
+
+    const clippedLine: DrawingLine = {
+      ...adminLine,
+      startTime:  rangeStart,
+      endTime:    rangeEnd,
+      startPrice: adminSlope * rangeStart + adminIntercept,
+      endPrice:   adminSlope * rangeEnd   + adminIntercept,
+    };
+
+    this.flashAdminLine(clippedLine, mode);
   }
 
-  this.drawingService.saveUserLine(this.testId, line)
-    .pipe(takeUntil(this.destroy$))
-    .subscribe({
-      next: () => {
-        this.matchedCount = this.drawingService.getMatchedLines(this.testId).size;
-
-        if (v.remainingCount === 0) {
-          this.testComplete = true;
-          this.showMessage('🎉 All lines matched! Test complete!', 'success');
-        } else {
-          this.showMessage(`✓ Correct! ${v.remainingCount} line(s) remaining.`, 'success');
-        }
-      },
-      error: (err) => {
-        console.error('[Validation] Save failed:', err);
-        // Rollback
-        const idx = this.userLines.findIndex(l => l.id === line.id);
-        if (idx !== -1) this.userLines.splice(idx, 1);
-        this.renderLines();
-        this.showMessage('Failed to save line.', 'error');
-      },
-    });
-}
-/**
- * Blinks only the portion of an admin line that overlaps with the user's drawn time range.
- * This is used for validation feedback — hint (orange) or success (green).
- *
- * If the user drew from t=100 to t=200, and the admin line spans t=50 to t=300,
- * only the t=100→t=200 segment blinks — not the full admin line.
- */
-private flashAdminLineInRange(
-  adminLine: DrawingLine,
-  userLine: DrawingLine,
-  mode: 'hint' | 'success'
-): void {
-  if (!this.ensureChart()) return;
-
-  // ── Strict clip: use ONLY the user's drawn time range ──
-  // Never show outside what the user actually drew
-  const clipStart = userLine.startTime;
-  const clipEnd   = userLine.endTime;
-
-  // Ensure user drew left-to-right (swap if needed)
-  const rangeStart = Math.min(clipStart, clipEnd);
-  const rangeEnd   = Math.max(clipStart, clipEnd);
-
-  // Admin line must actually overlap this range — if not, no flash at all
-  const adminRangeStart = Math.min(adminLine.startTime, adminLine.endTime);
-  const adminRangeEnd   = Math.max(adminLine.startTime, adminLine.endTime);
-
-  if (rangeEnd < adminRangeStart || rangeStart > adminRangeEnd) {
-    // User drew completely outside admin line range — no hint possible
-    return;
+  private showAdminLineHintInRange(userLine: DrawingLine): void {
+    if (!this.ensureChart()) return;
+    const adminLine = this.drawingService.findAdminLineContainingTimeRange(this.testId, userLine);
+    if (adminLine) {
+      this.flashAdminLine(adminLine, 'hint');
+      console.log('[Chart] Admin line found in range:', adminLine.id.substring(0, 8));
+    }
   }
 
-  // Interpolate admin line's price at exactly rangeStart and rangeEnd
-  const adminDt = adminLine.endTime - adminLine.startTime;
-  const adminSlope = adminDt !== 0
-    ? (adminLine.endPrice - adminLine.startPrice) / adminDt
-    : 0;
-  const adminIntercept = adminLine.startPrice - adminSlope * adminLine.startTime;
-
-  // Build a clipped segment — exactly matching user's time range
-  const clippedLine: DrawingLine = {
-    ...adminLine,
-    startTime:  rangeStart,
-    endTime:    rangeEnd,
-    startPrice: adminSlope * rangeStart + adminIntercept,
-    endPrice:   adminSlope * rangeEnd   + adminIntercept,
-  };
-
-  // Now flash this clipped segment (not the full admin line)
-  this.flashAdminLine(clippedLine, mode);
-}
- 
-private showAdminLineHintInRange(userLine: DrawingLine): void {
-  if (!this.ensureChart()) return;
- 
-  // Find admin line that overlaps with user's time range
-  const adminLine = this.drawingService.findAdminLineContainingTimeRange(this.testId, userLine);
-  
-  if (adminLine) {
-    // Admin line found in this range - blink it as hint
-    this.flashAdminLine(adminLine, 'hint');
-    console.log('[Chart] Admin line found in range:', adminLine.id.substring(0, 8));
-  }
-}
   // ==================== FLASH FEEDBACK ====================
-
-  private activeFlashInterval: any = null;
-  private activeFlashSeries: any   = null;
 
   /**
    * Blinks an admin line overlay 3 times.
-   * 
-   * mode = 'hint'    → orange  (#FF8C00)  "draw in this zone"
-   * mode = 'success' → green   (#00FF00)  "you matched this line"
+   *
+   * mode = 'hint'    → orange (#FF8C00) "draw in this zone"
+   * mode = 'success' → green  (#00FF00) "you matched this line"
    */
   private flashAdminLine(
     adminLine: DrawingLine,
@@ -1474,10 +1610,10 @@ private showAdminLineHintInRange(userLine: DrawingLine): void {
       this.showMessage('Select a line first to extend.', 'info');
       return;
     }
-    this.extendingLineId     = this.selectedLineId;
-    this.showExtendControls  = true;
-    this.extendLeftValue     = 0;
-    this.extendRightValue    = 0;
+    this.extendingLineId    = this.selectedLineId;
+    this.showExtendControls = true;
+    this.extendLeftValue    = 0;
+    this.extendRightValue   = 0;
   }
 
   closeExtendControls(): void {
@@ -1490,12 +1626,12 @@ private showAdminLineHintInRange(userLine: DrawingLine): void {
     const line = this.userLines.find(l => l.id === this.extendingLineId);
     if (!line) return;
 
-    const dt       = line.endTime  - line.startTime;
-    const dp       = line.endPrice - line.startPrice;
-    const slope    = dt !== 0 ? dp / dt : 0;
+    const dt        = line.endTime  - line.startTime;
+    const dp        = line.endPrice - line.startPrice;
+    const slope     = dt !== 0 ? dp / dt : 0;
     const intercept = line.startPrice - slope * line.startTime;
-    const leftExt  = this.extendLeftValue  * 86400;
-    const rightExt = this.extendRightValue * 86400;
+    const leftExt   = this.extendLeftValue  * 86400;
+    const rightExt  = this.extendRightValue * 86400;
 
     const updated: DrawingLine = {
       ...line,
@@ -1527,12 +1663,9 @@ private showAdminLineHintInRange(userLine: DrawingLine): void {
   private screenToChartPoint(sp: ScreenPoint): Point | null {
     try {
       if (sp.x < 0 || sp.y < 0) return null;
-
       const time  = this.chart.timeScale().coordinateToTime(sp.x) as number | null;
-      const price = this.candlestickSeries.coordinateToPrice(sp.y) as number | null;
-
+      const price = this.candlestickSeries.coordinateToPrice(sp.y)  as number | null;
       if (time == null || price == null || isNaN(time) || isNaN(price)) return null;
-
       return { x: sp.x, y: sp.y, time, price };
     } catch (err) {
       console.debug('[Chart] Coordinate conversion error:', err);
@@ -1542,8 +1675,8 @@ private showAdminLineHintInRange(userLine: DrawingLine): void {
 
   private chartToScreenPoint(time: number, price: number): ScreenPoint | null {
     try {
-      const x = this.chart.timeScale().timeToCoordinate(time) as number | null;
-      const y = this.candlestickSeries.priceToCoordinate(price) as number | null;
+      const x = this.chart.timeScale().timeToCoordinate(time)          as number | null;
+      const y = this.candlestickSeries.priceToCoordinate(price)         as number | null;
       if (x == null || y == null || isNaN(x) || isNaN(y)) return null;
       return { x, y };
     } catch (err) {
@@ -1599,7 +1732,7 @@ private showAdminLineHintInRange(userLine: DrawingLine): void {
             console.warn('[Chart] Test not found:', this.testId);
             this.chartData = this.generateMockData();
           } else {
-            const raw = test?.data ?? test?.chartData;
+            const raw      = test?.data ?? test?.chartData;
             this.chartData = this.normalizeChartData(raw);
           }
           this.applyChartData();
@@ -1734,6 +1867,6 @@ private showAdminLineHintInRange(userLine: DrawingLine): void {
     }
     if (event.key === '1') this.setActiveTool('select');
     if (event.key === '2') this.setActiveTool('trendline');
-    if (event.key === '3') this.setActiveTool('straightline');
+    if (event.key === '3')  this.setActiveTool('straightline');
   }
 }

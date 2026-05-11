@@ -1,4 +1,4 @@
-// drawing.service.ts (UPDATED with Line Width Tolerance)
+// drawing.service.ts (UPDATED with Line Width Tolerance + Hint Blink Support)
 
 import { Injectable } from '@angular/core';
 import { Observable, of } from 'rxjs';
@@ -12,10 +12,11 @@ export class DrawingService {
   private matchedLines = new Map<number, Set<string>>();
 
   // Configuration for validation tolerance
-  private readonly DEFAULT_PRICE_TOLERANCE_PERCENT = 0.05; // 5% price tolerance (increased from 3%)
-  private readonly DEFAULT_SLOPE_TOLERANCE = 0.15; // 15% slope tolerance
-  private readonly SAMPLE_POINTS = 10; // Number of points to sample for distance calculation
-
+  private readonly DEFAULT_PRICE_TOLERANCE_PERCENT = 0.05; // 5% price tolerance
+  private readonly DEFAULT_SLOPE_TOLERANCE = 0.15;         // 15% slope tolerance
+  private readonly SAMPLE_POINTS = 10;                     // Points to sample for distance calculation
+private readonly EXACT_TIME_TOLERANCE_SEC = 1;     // 1 second
+  private readonly EXACT_PRICE_TOLERANCE    = 0.01; 
   constructor() {
     this.loadFromLocalStorage();
   }
@@ -192,16 +193,14 @@ export class DrawingService {
 
   /**
    * Validates a user-drawn line against remaining unmatched admin reference lines.
-   * 
-   * NEW: Includes line width tolerance - users can draw lines that are close to
+   *
+   * Includes line width tolerance - users can draw lines that are close to
    * the admin line within a tolerance band (5% of price range by default).
-   * 
+   *
    * Returns a ValidationResult with details about the match.
    */
-  validateUserLine(testId: number, userLine: DrawingLine): ValidationResult {
+validateUserLine(testId: number, userLine: DrawingLine): ValidationResult {
     const adminLines = this.adminLines.get(testId) ?? [];
-    console.log(`[Validate] Admin lines: ${adminLines.length}`);
-
     if (adminLines.length === 0) {
       return {
         isValid: true,
@@ -214,7 +213,6 @@ export class DrawingService {
 
     const matched   = this.matchedLines.get(testId) ?? new Set<string>();
     const remaining = adminLines.filter(al => !matched.has(al.id));
-    console.log(`[Validate] Matched: ${matched.size}, Remaining: ${remaining.length}`);
 
     if (remaining.length === 0) {
       return {
@@ -226,44 +224,26 @@ export class DrawingService {
       };
     }
 
-    // Calculate price range for tolerance
-    const priceRange = this.calculatePriceRange(adminLines);
-    const tolerancePrice = priceRange * this.DEFAULT_PRICE_TOLERANCE_PERCENT;
-
-    // Find the best-matching unmatched admin line
-    let bestMatch: DrawingLine | null = null;
-    let bestScore = Infinity;
-    let bestDistance = Infinity;
-
+    // Find an exact match among remaining admin lines
+    let matchedAdminLine: DrawingLine | null = null;
     for (const al of remaining) {
-      const score = this.calculateSimilarityWithTolerance(userLine, al, tolerancePrice);
-      const avgDistance = this.calculateAverageDistance(userLine, al, tolerancePrice);
-      
-      console.log(`[Validate] Admin ${al.id.substring(0, 8)}: score=${score.toFixed(4)}, avgDistance=${avgDistance.toFixed(4)}`);
-      
-      if (score < bestScore) {
-        bestScore = score;
-        bestDistance = avgDistance;
-        bestMatch = al;
+      if (this.isExactMatch(userLine, al)) {
+        matchedAdminLine = al;
+        break;
       }
     }
 
-    // Check if line is within tolerance
-    const isWithinTolerance = bestScore < 1.0;
-    const isValid = isWithinTolerance && bestMatch !== null;
-
-    if (isValid && bestMatch) {
-      matched.add(bestMatch.id);
+    if (matchedAdminLine) {
+      matched.add(matchedAdminLine.id);
       this.matchedLines.set(testId, matched);
 
       const stillRemaining = adminLines.filter(al => !matched.has(al.id));
-      console.log(`[Validate] After match, still remaining: ${stillRemaining.length}`);
 
       return {
         isValid: true,
-        score: bestScore,
+        score: 0,
         isWithinTolerance: true,
-        correctLine: bestMatch,
+        correctLine: matchedAdminLine,
         remainingCount: stillRemaining.length,
         message: stillRemaining.length === 0
           ? '✓ All lines matched! Test complete!'
@@ -271,14 +251,58 @@ export class DrawingService {
       };
     }
 
+    // No exact match found
     return {
       isValid: false,
-      score: bestScore,
+      score: 1.0,           // not used for exact matching, but kept for compatibility
       isWithinTolerance: false,
-      correctLine: bestMatch ?? undefined,
+      correctLine: undefined,
       remainingCount: remaining.length,
-      message: `✗ Incorrect line. Try drawing closer to the hint line (tolerance: ±${tolerancePrice.toFixed(2)}).`,
+      message: '✗ Line does not match any admin line exactly. Draw the exact same start and end points.',
     };
+  }
+
+   private isExactMatch(user: DrawingLine, admin: DrawingLine): boolean {
+    // Tool type must be the same (or compatible if needed)
+    if (user.tool !== admin.tool) return false;
+
+    // For horizontal line: only start price and end price matter (times are irrelevant)
+    if (user.tool === 'hline') {
+      return Math.abs(user.startPrice - admin.startPrice) <= this.EXACT_PRICE_TOLERANCE
+          && Math.abs(user.endPrice   - admin.endPrice)   <= this.EXACT_PRICE_TOLERANCE;
+    }
+
+    // For vertical line: only start time and end time matter
+    if (user.tool === 'vline') {
+      return Math.abs(user.startTime - admin.startTime) <= this.EXACT_TIME_TOLERANCE_SEC
+          && Math.abs(user.endTime   - admin.endTime)   <= this.EXACT_TIME_TOLERANCE_SEC;
+    }
+
+    // For ray: check start point and slope (end point is ignored because ray extends infinitely)
+    if (user.tool === 'ray') {
+      const startTimeMatch  = Math.abs(user.startTime - admin.startTime) <= this.EXACT_TIME_TOLERANCE_SEC;
+      const startPriceMatch = Math.abs(user.startPrice - admin.startPrice) <= this.EXACT_PRICE_TOLERANCE;
+      if (!startTimeMatch || !startPriceMatch) return false;
+
+      // Slope must match (direction)
+      const userSlope  = this.calcSlope(user);
+      const adminSlope = this.calcSlope(admin);
+      return Math.abs(userSlope - adminSlope) <= 0.0001; // very small slope tolerance
+    }
+
+    // For trendline and straightline: both endpoints must match
+    const startTimeMatch  = Math.abs(user.startTime - admin.startTime) <= this.EXACT_TIME_TOLERANCE_SEC;
+    const endTimeMatch    = Math.abs(user.endTime   - admin.endTime)   <= this.EXACT_TIME_TOLERANCE_SEC;
+    const startPriceMatch = Math.abs(user.startPrice - admin.startPrice) <= this.EXACT_PRICE_TOLERANCE;
+    const endPriceMatch   = Math.abs(user.endPrice   - admin.endPrice)   <= this.EXACT_PRICE_TOLERANCE;
+
+    return startTimeMatch && endTimeMatch && startPriceMatch && endPriceMatch;
+  }
+
+  private calcSlope(line: DrawingLine): number {
+    const dt = line.endTime - line.startTime;
+    if (Math.abs(dt) < 0.001) return 0;
+    return (line.endPrice - line.startPrice) / dt;
   }
 
   /**
@@ -286,103 +310,97 @@ export class DrawingService {
    * Lower score is better. Score < 1.0 means within tolerance.
    */
   private calculateSimilarityWithTolerance(
-    user: DrawingLine, 
-    admin: DrawingLine, 
+    user: DrawingLine,
+    admin: DrawingLine,
     tolerancePrice: number
   ): number {
-    // Calculate overlapping time range
     const overlapStart = Math.max(user.startTime, admin.startTime);
-    const overlapEnd = Math.min(user.endTime, admin.endTime);
+    const overlapEnd   = Math.min(user.endTime,   admin.endTime);
 
-    // No temporal overlap
     if (overlapEnd <= overlapStart) return 2.0;
 
-    // Calculate slopes
-    const userTimeRange = Math.max(user.endTime - user.startTime, 1);
+    const userTimeRange  = Math.max(user.endTime  - user.startTime,  1);
     const adminTimeRange = Math.max(admin.endTime - admin.startTime, 1);
-    
-    const userSlope = (user.endPrice - user.startPrice) / userTimeRange;
+
+    const userSlope  = (user.endPrice  - user.startPrice)  / userTimeRange;
     const adminSlope = (admin.endPrice - admin.startPrice) / adminTimeRange;
-    
-    // Calculate intercepts
-    const userIntercept = user.startPrice - userSlope * user.startTime;
+
+    const userIntercept  = user.startPrice  - userSlope  * user.startTime;
     const adminIntercept = admin.startPrice - adminSlope * admin.startTime;
 
-    // Sample points across the overlap
     let totalDeviation = 0;
-    let maxDeviation = 0;
+    let maxDeviation   = 0;
     let slopeDeviationSum = 0;
-    
+
     for (let i = 0; i <= this.SAMPLE_POINTS; i++) {
-      const t = overlapStart + (overlapEnd - overlapStart) * (i / this.SAMPLE_POINTS);
-      const userPrice = userSlope * t + userIntercept;
+      const t          = overlapStart + (overlapEnd - overlapStart) * (i / this.SAMPLE_POINTS);
+      const userPrice  = userSlope  * t + userIntercept;
       const adminPrice = adminSlope * t + adminIntercept;
-      const deviation = Math.abs(userPrice - adminPrice);
-      
+      const deviation  = Math.abs(userPrice - adminPrice);
+
       totalDeviation += deviation;
-      maxDeviation = Math.max(maxDeviation, deviation);
-      
-      // Track slope deviation at endpoints
+      maxDeviation    = Math.max(maxDeviation, deviation);
+
       if (i === 0 || i === this.SAMPLE_POINTS) {
         slopeDeviationSum += Math.abs(userSlope - adminSlope);
       }
     }
-    
-    const avgDeviation = totalDeviation / (this.SAMPLE_POINTS + 1);
+
+    const avgDeviation     = totalDeviation / (this.SAMPLE_POINTS + 1);
     const avgSlopeDeviation = slopeDeviationSum / 2;
-    
-    // Combined score: weighted average of deviation and slope difference
+
     const deviationScore = avgDeviation / tolerancePrice;
-    const slopeScore = avgSlopeDeviation / (Math.abs(adminSlope) * this.DEFAULT_SLOPE_TOLERANCE + 0.01);
-    
+    const slopeScore     = avgSlopeDeviation / (Math.abs(adminSlope) * this.DEFAULT_SLOPE_TOLERANCE + 0.01);
+
     // Weight: 70% deviation, 30% slope
     return (deviationScore * 0.7) + (Math.min(slopeScore, 1.0) * 0.3);
   }
 
   /**
-   * Calculate the average distance between user line and admin line across sample points
+   * Calculate the average distance between user line and admin line across sample points.
    */
   private calculateAverageDistance(
-    user: DrawingLine, 
-    admin: DrawingLine, 
+    user: DrawingLine,
+    admin: DrawingLine,
     tolerancePrice: number
   ): number {
     const overlapStart = Math.max(user.startTime, admin.startTime);
-    const overlapEnd = Math.min(user.endTime, admin.endTime);
-    
+    const overlapEnd   = Math.min(user.endTime,   admin.endTime);
+
     if (overlapEnd <= overlapStart) return Infinity;
-    
-    const userSlope = (user.endPrice - user.startPrice) / Math.max(user.endTime - user.startTime, 1);
+
+    const userSlope  = (user.endPrice  - user.startPrice)  / Math.max(user.endTime  - user.startTime,  1);
     const adminSlope = (admin.endPrice - admin.startPrice) / Math.max(admin.endTime - admin.startTime, 1);
-    const userIntercept = user.startPrice - userSlope * user.startTime;
+
+    const userIntercept  = user.startPrice  - userSlope  * user.startTime;
     const adminIntercept = admin.startPrice - adminSlope * admin.startTime;
-    
+
     let totalDistance = 0;
-    
+
     for (let i = 0; i <= this.SAMPLE_POINTS; i++) {
-      const t = overlapStart + (overlapEnd - overlapStart) * (i / this.SAMPLE_POINTS);
-      const userPrice = userSlope * t + userIntercept;
+      const t          = overlapStart + (overlapEnd - overlapStart) * (i / this.SAMPLE_POINTS);
+      const userPrice  = userSlope  * t + userIntercept;
       const adminPrice = adminSlope * t + adminIntercept;
-      totalDistance += Math.abs(userPrice - adminPrice);
+      totalDistance   += Math.abs(userPrice - adminPrice);
     }
-    
+
     return totalDistance / (this.SAMPLE_POINTS + 1);
   }
 
   /**
-   * Calculate the price range across all admin lines for tolerance calculation
+   * Calculate the price range across all admin lines for tolerance calculation.
    */
   private calculatePriceRange(adminLines: DrawingLine[]): number {
-    if (!adminLines.length) return 1000; // Default range
-    
-    let minPrice = Infinity;
+    if (!adminLines.length) return 1000;
+
+    let minPrice =  Infinity;
     let maxPrice = -Infinity;
-    
+
     for (const line of adminLines) {
       minPrice = Math.min(minPrice, line.startPrice, line.endPrice);
       maxPrice = Math.max(maxPrice, line.startPrice, line.endPrice);
     }
-    
+
     return maxPrice - minPrice;
   }
 
@@ -408,17 +426,57 @@ export class DrawingService {
     return null;
   }
 
+  // ═══════════════════════════ HINT BLINK SUPPORT ══════════════════════════════
+
   /**
-   * Get remaining unmatched admin lines for a test
+   * Returns all unmatched admin lines whose time range overlaps the user's
+   * current preview line time range.
+   *
+   * Called on every crosshair move while the user is drawing.
+   * Once an admin line is matched (correct answer drawn), it is automatically
+   * excluded — its hint blink is permanently disabled with no extra handling needed.
+   *
+   * All three hint conditions collapse to a single time-range overlap check:
+   *   1. Price range overlaps admin line price band        → time overlap is enough
+   *   2. Time AND price both overlap admin line            → time overlap is enough
+   *   3. Endpoint above/below admin line in the same zone → time overlap is enough
+   */
+  getUnmatchedAdminLinesInTimeRange(
+    testId: number,
+    previewStartTime: number,
+    previewEndTime:   number
+  ): DrawingLine[] {
+    const adminLines = this.adminLines.get(testId) ?? [];
+    const matched    = this.matchedLines.get(testId) ?? new Set<string>();
+
+    const pvMin = Math.min(previewStartTime, previewEndTime);
+    const pvMax = Math.max(previewStartTime, previewEndTime);
+
+    return adminLines.filter(al => {
+      // Already correctly answered — never blink again
+      if (matched.has(al.id)) return false;
+
+      const alMin = Math.min(al.startTime, al.endTime);
+      const alMax = Math.max(al.startTime, al.endTime);
+
+      // Time ranges must overlap
+      return pvMax >= alMin && pvMin <= alMax;
+    });
+  }
+
+  // ═══════════════════════════ REMAINING / STATUS HELPERS ══════════════════════
+
+  /**
+   * Get remaining unmatched admin lines for a test.
    */
   getRemainingAdminLines(testId: number): DrawingLine[] {
     const allAdminLines = this.adminLines.get(testId) ?? [];
-    const matchedIds = this.matchedLines.get(testId) ?? new Set();
+    const matchedIds    = this.matchedLines.get(testId) ?? new Set();
     return allAdminLines.filter(line => !matchedIds.has(line.id));
   }
 
   /**
-   * Check if a specific admin line has been matched
+   * Check if a specific admin line has been matched.
    */
   isAdminLineMatched(testId: number, adminLineId: string): boolean {
     const matchedIds = this.matchedLines.get(testId) ?? new Set();
@@ -426,7 +484,7 @@ export class DrawingService {
   }
 
   /**
-   * Get match count for a test
+   * Get match count for a test.
    */
   getMatchCount(testId: number): number {
     const matchedIds = this.matchedLines.get(testId) ?? new Set();
@@ -434,11 +492,11 @@ export class DrawingService {
   }
 
   /**
-   * Check if test is complete (all admin lines matched)
+   * Check if test is complete (all admin lines matched).
    */
   isTestComplete(testId: number): boolean {
     const allAdminLines = this.adminLines.get(testId) ?? [];
-    const matchedIds = this.matchedLines.get(testId) ?? new Set();
+    const matchedIds    = this.matchedLines.get(testId) ?? new Set();
     return allAdminLines.length > 0 && matchedIds.size >= allAdminLines.length;
   }
 
@@ -497,5 +555,4 @@ export class DrawingService {
       this.matchedLines = new Map();
     }
   }
-  
 }
