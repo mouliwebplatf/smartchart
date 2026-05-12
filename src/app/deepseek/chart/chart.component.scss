@@ -42,7 +42,7 @@
 .chart-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  // justify-content: space-between;
   height: var(--header-h);
   padding: 0 16px;
   background: var(--surface);
@@ -81,6 +81,7 @@
 .header-controls {
   display: flex;
   align-items: center;
+  justify-self: end;
   gap: 8px;
 }
 
@@ -254,6 +255,15 @@
   height: 100%;
   pointer-events: auto;
   z-index: 10;
+   will-change: transform;
+}
+.chart-container {
+  will-change: transform; // Improves rendering performance
+}
+.is-dragging {
+  * {
+    pointer-events: none !important;
+  }
 }
 
 .validation-message {

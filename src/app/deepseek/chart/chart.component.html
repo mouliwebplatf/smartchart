@@ -3,7 +3,7 @@
 
   <!-- ══════════════ HEADER ══════════════ -->
   <div class="chart-header">
-    <div class="duration-filter">
+    <!-- <div class="duration-filter">
       <label>Show last</label>
       <input type="number" [(ngModel)]="durationValue" (change)="onDurationChange()" min="1">
       <select [(ngModel)]="durationType" (change)="onDurationChange()">
@@ -11,9 +11,9 @@
         <option value="month">Month(s)</option>
         <option value="year">Year(s)</option>
       </select>
-    </div>
+    </div> -->
 
-    <h2>{{ testName }}</h2>
+    <!-- <h2>{{ testName }}</h2> -->
 
     <div class="header-controls">
       <button class="btn-theme" (click)="toggleTheme()" title="Toggle Theme">
@@ -285,7 +285,7 @@
   </div>
 
   <!-- ══════════════ INSTRUCTIONS ══════════════ -->
-  <div class="instructions">
+  <!-- <div class="instructions">
     <h3>📐 Drawing Guide</h3>
     <ul>
       <li><strong>Draw Line:</strong> Select Line tool → click start point → click end point</li>
@@ -298,7 +298,7 @@
       <li *ngIf="userRole === 'admin'"><strong>Admin:</strong> Draw lines then click "Save" to set correct answers</li>
       <li *ngIf="userRole !== 'admin'"><strong>User:</strong> Draw lines to practise — validation is instant</li>
     </ul>
-  </div>
+  </div> -->
 </div>
 
 <!-- Progress badge -->

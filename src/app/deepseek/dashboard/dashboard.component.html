@@ -17,7 +17,14 @@
       </button>
     </div>
 
-    <div class="tests-grid">
+    <!-- Loading State -->
+    <div *ngIf="isLoadingTests" class="loading-state">
+      <div class="spinner"></div>
+      <p>Loading tests...</p>
+    </div>
+
+    <!-- Tests Grid -->
+    <div *ngIf="!isLoadingTests" class="tests-grid">
       <div *ngFor="let test of tests" class="test-card">
         <div class="test-header">
           <h3>{{ test.name }}</h3>
@@ -32,39 +39,138 @@
           <button class="btn-open" (click)="openChart(test.id)">Open Chart</button>
         </div>
       </div>
+
+      <!-- Empty State -->
+      <div *ngIf="tests.length === 0" class="empty-state">
+        <p>No tests available.</p>
+        <p *ngIf="userRole === 'admin'">Click "Add New Test" to create your first test.</p>
+      </div>
     </div>
   </div>
 
   <!-- Add Test Modal -->
-  <div class="modal" *ngIf="showAddModal">
+  <div class="modal" *ngIf="showAddModal" (click)="onModalBackgroundClick($event, 'add')">
     <div class="modal-content">
       <div class="modal-header">
         <h3>Add New Test</h3>
-        <button class="close" (click)="showAddModal = false">&times;</button>
+        <button class="close" (click)="closeAddModal()" [disabled]="newTest.isProcessing">&times;</button>
       </div>
       <div class="modal-body">
-        <div class="form-group">
-          <label>Test Name</label>
-          <input type="text" [(ngModel)]="newTest.name" placeholder="Enter test name" />
+        <!-- Upload Progress Section -->
+        <div *ngIf="newTest.isProcessing || newTest.isUploading" class="upload-progress-container">
+          <div class="progress-header">
+            <span class="progress-title">Processing File</span>
+            <span class="progress-percentage">{{ newTest.fileProgress }}%</span>
+          </div>
+          
+          <div class="progress-bar">
+            <div class="progress-fill" [style.width.%]="newTest.fileProgress">
+              <span *ngIf="newTest.fileProgress > 30" class="progress-text">{{ newTest.fileProgress }}%</span>
+            </div>
+          </div>
+          
+          <div class="progress-status">
+            <div class="spinner-small" *ngIf="newTest.fileProgress < 100"></div>
+            <span class="status-message">{{ newTest.statusMessage || 'Processing...' }}</span>
+          </div>
+          
+          <!-- Processing steps -->
+          <div class="processing-steps">
+            <div class="step" [class.completed]="newTest.fileProgress >= 10">
+              <span class="step-icon">📄</span>
+              <span class="step-text">Parsing File</span>
+            </div>
+            <div class="step" [class.completed]="newTest.fileProgress >= 40">
+              <span class="step-icon">✓</span>
+              <span class="step-text">Validating Data</span>
+            </div>
+            <div class="step" [class.completed]="newTest.fileProgress >= 60">
+              <span class="step-icon">⚡</span>
+              <span class="step-text">Optimizing</span>
+            </div>
+            <div class="step" [class.completed]="newTest.fileProgress >= 85">
+              <span class="step-icon">☁️</span>
+              <span class="step-text">Uploading</span>
+            </div>
+          </div>
         </div>
-        <div class="form-group">
-          <label>Description</label>
-          <textarea [(ngModel)]="newTest.description" placeholder="Enter test description"></textarea>
+
+        <!-- Form Fields -->
+        <div [class.form-disabled]="newTest.isProcessing">
+          <div class="form-group">
+            <label>Test Name *</label>
+            <input 
+              type="text" 
+              [(ngModel)]="newTest.name" 
+              placeholder="Enter test name"
+              [disabled]="newTest.isProcessing" />
+          </div>
+          
+          <div class="form-group">
+            <label>Description *</label>
+            <textarea 
+              [(ngModel)]="newTest.description" 
+              placeholder="Enter test description"
+              rows="3"
+              [disabled]="newTest.isProcessing"></textarea>
+          </div>
+          
+          <div class="form-group">
+            <label>Upload Chart Data *</label>
+            <input 
+              type="file" 
+              #fileInput
+              (change)="onFileSelected($event)" 
+              accept=".csv,.xlsx,.xls,.json"
+              [disabled]="newTest.isProcessing" />
+            <small class="form-text text-muted">
+              Supported formats: CSV, Excel (.xlsx, .xls), JSON<br/>
+              File should contain: Date/Time, Open, High, Low, Close columns<br/>
+              Maximum file size: 50MB
+            </small>
+            
+            <!-- Error Message -->
+            <div *ngIf="newTest.fileError" class="error-message">
+              ⚠️ {{ newTest.fileError }}
+            </div>
+            
+            <!-- Success Message -->
+            <div *ngIf="newTest.selectedFile && !newTest.fileError && !newTest.isProcessing" 
+                 class="success-message">
+              ✓ File selected: {{ newTest.selectedFile.name }}
+              <button type="button" class="btn-remove-file" (click)="removeSelectedFile()">Remove</button>
+            </div>
+          </div>
         </div>
       </div>
+      
       <div class="modal-footer">
-        <button class="btn-cancel" (click)="showAddModal = false">Cancel</button>
-        <button class="btn-submit" (click)="addTest()">Add Test</button>
+        <button 
+          class="btn-cancel" 
+          (click)="closeAddModal()" 
+          [disabled]="newTest.isProcessing">
+          Cancel
+        </button>
+        <button 
+          class="btn-submit" 
+          (click)="addTest()" 
+          [disabled]="newTest.isProcessing || !newTest.selectedFile || !newTest.name.trim() || !newTest.description.trim()">
+          <span *ngIf="!newTest.isProcessing">Add Data</span>
+          <span *ngIf="newTest.isProcessing">
+            <span class="btn-spinner"></span>
+            Processing...
+          </span>
+        </button>
       </div>
     </div>
   </div>
 
   <!-- Edit Test Modal -->
-  <div class="modal" *ngIf="showEditModal">
+  <div class="modal" *ngIf="showEditModal" (click)="onModalBackgroundClick($event, 'edit')">
     <div class="modal-content">
       <div class="modal-header">
         <h3>Edit Test</h3>
-        <button class="close" (click)="showEditModal = false">&times;</button>
+        <button class="close" (click)="closeEditModal()">&times;</button>
       </div>
       <div class="modal-body">
         <div class="form-group">
@@ -73,11 +179,11 @@
         </div>
         <div class="form-group">
           <label>Description</label>
-          <textarea [(ngModel)]="editTest.description" placeholder="Enter test description"></textarea>
+          <textarea [(ngModel)]="editTest.description" placeholder="Enter test description" rows="3"></textarea>
         </div>
       </div>
       <div class="modal-footer">
-        <button class="btn-cancel" (click)="showEditModal = false">Cancel</button>
+        <button class="btn-cancel" (click)="closeEditModal()">Cancel</button>
         <button class="btn-submit" (click)="updateTest()">Update Test</button>
       </div>
     </div>
