@@ -21,7 +21,6 @@
     "apexcharts": "^5.10.6",
     "echarts": "^6.0.0",
     "lightweight-charts": "^5.2.0",
-    "lightweight-charts-drawing": "^0.1.1",
     "ng-apexcharts": "^2.4.0",
     "ngx-echarts": "^21.0.0",
     "papaparse": "^5.5.3",
