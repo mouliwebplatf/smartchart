@@ -1,4 +1,4 @@
-// chart.component.ts (REFACTORED - User-Side Validation Fix + Hint Blink Support)
+// chart.component.ts (UPDATED for lightweight-charts v5)
 import {
   Component, ElementRef, ViewChild,
   AfterViewInit, OnDestroy, HostListener,
@@ -7,7 +7,13 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 import { v4 as uuidv4 } from 'uuid';
-import * as LightweightCharts from 'lightweight-charts';
+
+// ✅ v5: named imports instead of import * as LightweightCharts
+import {
+  createChart,
+  CandlestickSeries,
+  LineSeries,
+} from 'lightweight-charts';
 
 import { DrawingService } from '../services/drawing.service';
 import { AuthService } from '../services/auth.service';
@@ -106,15 +112,9 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   private isDoubleClick: boolean = false;
 
   // ── HINT BLINK STATE ──
-  // Tracks overlay series for each blinking admin line (adminLineId → lineSeries)
   private hintBlinkSeries: Map<string, any> = new Map();
-  // Tracks which admin line IDs are currently mid-animation (prevents double-trigger)
   private hintBlinkActive: Set<string> = new Set();
-  // Tracks which IDs were in range on the previous crosshair move
-  // Used to detect exit → re-arm the blink on next entry
   private hintPrevInRange: Set<string> = new Set();
-  // IDs that have already blinked for the current range entry
-  // Cleared automatically when the line leaves range
   private hintBlinkFired: Set<string> = new Set();
 
   // ── VALIDATION FLASH STATE ──
@@ -157,7 +157,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
-    // Stop hint blinks first to prevent dangling intervals
     this.stopAllHintBlinks();
 
     this.chartClickSubscription?.();
@@ -238,7 +237,8 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
 
     const t = this.themes[this.currentTheme];
 
-    this.chart = LightweightCharts.createChart(container, {
+    // ✅ v5: use named createChart import
+    this.chart = createChart(container, {
       width:  container.clientWidth,
       height: 600,
       layout: {
@@ -283,17 +283,13 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       handleScale:  { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
     });
 
-    this.candlestickSeries = this.chart.addCandlestickSeries({
+    // ✅ v5: chart.addSeries(CandlestickSeries, { ...options })
+    this.candlestickSeries = this.chart.addSeries(CandlestickSeries, {
       upColor:          '#26a69a',
       downColor:        '#ef5350',
       borderVisible:    false,
       wickUpColor:      '#26a69a',
       wickDownColor:    '#ef5350',
-      priceFormatter:   (price: number) => price.toLocaleString('en-IN', {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      }),
-      priceScaleId:       'right',
       priceLineVisible:   false,
       lastValueVisible:   true,
     });
@@ -467,7 +463,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     this.isDrawing        = false;
     this.hasFirstPoint    = false;
     this.drawingStartPoint = null;
-    // Stop all hint blinks when drawing is cancelled
     this.stopAllHintBlinks();
     if (this.previewSeries) {
       try { this.chart.removeSeries(this.previewSeries); } catch { }
@@ -502,7 +497,8 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
         previewLineStyle = 1;
       }
 
-      this.previewSeries = this.chart.addLineSeries({
+      // ✅ v5: chart.addSeries(LineSeries, { ...options })
+      this.previewSeries = this.chart.addSeries(LineSeries, {
         color:             previewColor,
         lineWidth:         2,
         lineStyle:         previewLineStyle,
@@ -521,7 +517,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   private finishDrawing(endPoint: Point): void {
     if (this.testComplete && this.userRole !== 'admin') return;
 
-    // Stop all hint blinks immediately — validation flash takes over
     this.stopAllHintBlinks();
 
     let start: Point, end: Point;
@@ -621,13 +616,8 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
         this.previewSeries.setData(ordered);
       }
 
-      // ── HINT BLINKS: evaluate which admin lines to blink based on preview time range ──
-      // Only fires for user role; admin always sees their own lines directly.
       if (this.userRole !== 'admin' && this.drawingStartPoint) {
-        this.updateHintBlinks(
-          this.drawingStartPoint.time,
-          cp.time
-        );
+        this.updateHintBlinks(this.drawingStartPoint.time, cp.time);
       }
 
     } catch (err) {
@@ -1042,7 +1032,8 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
           { time: from, value: line.startPrice },
           { time: to,   value: line.startPrice },
         ];
-        const series = this.chart.addLineSeries({
+        // ✅ v5: addSeries(LineSeries, { ...options })
+        const series = this.chart.addSeries(LineSeries, {
           color, lineWidth: width,
           priceLineVisible: false, lastValueVisible: false,
           crosshairMarkerVisible: false, lineStyle,
@@ -1091,7 +1082,8 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
           break;
       }
 
-      const series = this.chart.addLineSeries({
+      // ✅ v5: addSeries(LineSeries, { ...options })
+      const series = this.chart.addSeries(LineSeries, {
         color, lineWidth: width,
         priceLineVisible: false, lastValueVisible: false,
         crosshairMarkerVisible: false, lineStyle,
@@ -1116,7 +1108,8 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     if (sorted.length < 2) return;
     const t1 = Math.min(sorted[0].time, sorted[1].time);
     const t2 = Math.max(sorted[0].time, sorted[1].time);
-    const series = this.chart.addLineSeries({
+    // ✅ v5: addSeries(LineSeries, { ...options })
+    const series = this.chart.addSeries(LineSeries, {
       color, lineWidth: width, priceLineVisible: false, lastValueVisible: false,
     });
     series.setData([{ time: t1, value: minP - pad }, { time: t2, value: maxP + pad }]);
@@ -1151,7 +1144,8 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
         existing.setData(data);
         return;
       }
-      const series = this.chart.addLineSeries({
+      // ✅ v5: addSeries(LineSeries, { ...options })
+      const series = this.chart.addSeries(LineSeries, {
         color, lineWidth: width, lineStyle,
         priceLineVisible: false, lastValueVisible: false,
         crosshairMarkerVisible: false, priceScaleId: 'right',
@@ -1179,72 +1173,43 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
 
   // ==================== HINT BLINK SYSTEM ====================
 
-  /**
-   * Main hint driver — called on every crosshair move while the user is drawing.
-   *
-   * Logic:
-   *  - Ask the service for all unmatched admin lines whose time range overlaps the preview
-   *  - Lines that WERE in range but are no longer → clear their "fired" flag (re-arm)
-   *  - Lines newly in range that haven't fired yet this entry → trigger 3-blink yellow hint
-   *  - Lines that are already correctly matched are excluded by the service automatically
-   */
-  private updateHintBlinks(
-    previewStartTime: number,
-    previewEndTime:   number
-  ): void {
+  private updateHintBlinks(previewStartTime: number, previewEndTime: number): void {
     if (!this.ensureChart()) return;
 
     const inRangeLines = this.drawingService.getUnmatchedAdminLinesInTimeRange(
-      this.testId,
-      previewStartTime,
-      previewEndTime
+      this.testId, previewStartTime, previewEndTime
     );
     const nowInRangeIds = new Set(inRangeLines.map(l => l.id));
 
-    // Lines that LEFT the range since the last move → re-arm them
     for (const id of this.hintPrevInRange) {
       if (!nowInRangeIds.has(id)) {
-        this.hintBlinkFired.delete(id); // left range → can blink again on next entry
+        this.hintBlinkFired.delete(id);
       }
     }
 
-    // Lines newly IN range that haven't blinked yet for this entry → trigger
     for (const al of inRangeLines) {
-      if (this.hintBlinkFired.has(al.id))  continue; // already blinked this entry
-      if (this.hintBlinkActive.has(al.id)) continue; // mid-animation right now
+      if (this.hintBlinkFired.has(al.id))  continue;
+      if (this.hintBlinkActive.has(al.id)) continue;
       this.triggerHintBlink(al);
     }
 
     this.hintPrevInRange = nowInRangeIds;
   }
 
-  /**
-   * Flashes a single admin line yellow (#FFD700) exactly 3 times at 300ms each.
-   *
-   * After the animation finishes:
-   *  - The overlay series is removed from the chart
-   *  - The line is marked "fired" so it won't blink again while still in range
-   *  - It re-arms automatically when the user moves out of the time zone
-   *
-   * Once an admin line is matched (correct answer), the service stops returning
-   * it from getUnmatchedAdminLinesInTimeRange, so it will NEVER blink again.
-   */
   private triggerHintBlink(adminLine: DrawingLine): void {
     if (!this.ensureChart()) return;
 
-    // Mark immediately to prevent double-trigger
     this.hintBlinkActive.add(adminLine.id);
     this.hintBlinkFired.add(adminLine.id);
 
-    // Remove any stale overlay series for this id
     const stale = this.hintBlinkSeries.get(adminLine.id);
     if (stale) {
       try { this.chart.removeSeries(stale); } catch { }
       this.hintBlinkSeries.delete(adminLine.id);
     }
 
-    // Create the yellow overlay series
-    const series = this.chart.addLineSeries({
+    // ✅ v5: addSeries(LineSeries, { ...options })
+    const series = this.chart.addSeries(LineSeries, {
       color:                  '#FFD700',
       lineWidth:              3,
       lineStyle:              0,
@@ -1258,10 +1223,9 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     ]);
     this.hintBlinkSeries.set(adminLine.id, series);
 
-    // Blink 3 times: on(300ms) → off(300ms) → on → off → on → off → done
     const BLINK_MS   = 300;
     const BLINKS     = 3;
-    const totalTicks = BLINKS * 2; // on/off per blink = 6 ticks
+    const totalTicks = BLINKS * 2;
     let tick = 0;
 
     const interval = setInterval(() => {
@@ -1272,9 +1236,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
           try { this.chart.removeSeries(series); } catch { }
           this.hintBlinkSeries.delete(adminLine.id);
           this.hintBlinkActive.delete(adminLine.id);
-          // hintBlinkFired stays SET — prevents re-blink while still in this range entry
         } else {
-          // Even ticks = on (yellow), odd ticks = off (transparent)
           series.applyOptions({
             color: tick % 2 === 0 ? '#FFD700' : 'rgba(0,0,0,0)',
           });
@@ -1287,14 +1249,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     }, BLINK_MS);
   }
 
-  /**
-   * Stops and removes ALL hint blink overlays and fully resets tracking state.
-   *
-   * Called when:
-   *  - User finishes drawing a line (2nd click) → validation flash takes over
-   *  - User presses Escape / cancels drawing
-   *  - Component is destroyed
-   */
   private stopAllHintBlinks(): void {
     for (const series of this.hintBlinkSeries.values()) {
       try { this.chart.removeSeries(series); } catch { }
@@ -1307,24 +1261,12 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
 
   // ==================== VALIDATION ====================
 
-  /**
-   * USER-SIDE VALIDATION
-   *
-   * Process:
-   * 1. Validate user line against admin reference lines (slope + price only)
-   * 2. If VALID:   Auto-snap to matched admin line, add to UI, persist, show success + green flash
-   * 3. If INVALID: Show error, flash hint (orange) on correct admin line, DO NOT add to UI
-   *
-   * The user's drawn line is NEVER displayed in an incorrect state.
-   * Only validated (and snapped) lines appear on the chart.
-   */
   private validateAndSaveUserLine(line: DrawingLine): void {
     if (line.tool === 'straightline') {
       console.warn('[Chart] Straight lines are not saved to database');
       return;
     }
 
-    // Defensively remove if already inserted
     const existingIdx = this.userLines.findIndex(l => l.id === line.id);
     if (existingIdx !== -1) this.userLines.splice(existingIdx, 1);
     this.renderLines();
@@ -1346,7 +1288,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       return;
     }
 
-    // VALID — add to UI now
     this.userLines.push({ ...line });
     this.renderLines();
 
@@ -1377,10 +1318,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       });
   }
 
-  /**
-   * Blinks only the portion of an admin line that overlaps the user's drawn time range.
-   * Used for validation feedback — hint (orange) or success (green).
-   */
   private flashAdminLineInRange(
     adminLine: DrawingLine,
     userLine: DrawingLine,
@@ -1424,16 +1361,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
 
   // ==================== FLASH FEEDBACK ====================
 
-  /**
-   * Blinks an admin line overlay 3 times.
-   *
-   * mode = 'hint'    → orange (#FF8C00) "draw in this zone"
-   * mode = 'success' → green  (#00FF00) "you matched this line"
-   */
-  private flashAdminLine(
-    adminLine: DrawingLine,
-    mode: 'hint' | 'success' = 'success'
-  ): void {
+  private flashAdminLine(adminLine: DrawingLine, mode: 'hint' | 'success' = 'success'): void {
     if (!this.ensureChart()) return;
 
     if (this.activeFlashInterval) {
@@ -1450,7 +1378,8 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     const BLINK_MS = 300;
     const BLINKS   = 3;
 
-    const flashSeries = this.chart.addLineSeries({
+    // ✅ v5: addSeries(LineSeries, { ...options })
+    const flashSeries = this.chart.addSeries(LineSeries, {
       color:                  colorOn,
       lineWidth:              4,
       lineStyle:              0,
