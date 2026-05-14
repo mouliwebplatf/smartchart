@@ -1,4 +1,4 @@
-// chart.component.ts (UPDATED for lightweight-charts v5)
+// chart.component.ts (FIXED for cross-browser compatibility)
 import {
   Component, ElementRef, ViewChild,
   AfterViewInit, OnDestroy, HostListener,
@@ -8,7 +8,6 @@ import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 import { v4 as uuidv4 } from 'uuid';
 
-// ✅ v5: named imports instead of import * as LightweightCharts
 import {
   createChart,
   CandlestickSeries,
@@ -110,6 +109,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
 
   private clickTimeout: any = null;
   private isDoubleClick: boolean = false;
+  private resizeTimeout: any = null;
 
   // ── HINT BLINK STATE ──
   private hintBlinkSeries: Map<string, any> = new Map();
@@ -180,6 +180,10 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       clearTimeout(this.clickTimeout);
       this.clickTimeout = null;
     }
+    if (this.resizeTimeout) {
+      clearTimeout(this.resizeTimeout);
+      this.resizeTimeout = null;
+    }
     if (this.activeFlashInterval) {
       clearInterval(this.activeFlashInterval);
       this.activeFlashInterval = null;
@@ -220,12 +224,34 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     return true;
   }
 
+  private isSafari(): boolean {
+    return /Safari/.test(navigator.userAgent) && !/Chrome/.test(navigator.userAgent);
+  }
+
+  private getDevicePixelRatio(): number {
+    // Safari has issues with DPR on retina - use 1 for consistency
+    if (this.isSafari()) {
+      return 1; // Safari handles canvas scaling internally
+    }
+    return typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1;
+  }
+
   // ==================== INIT CHART ====================
 
   private handleResize = (): void => {
-    if (!this.ensureChart() || !this.chartContainer) return;
-    this.chart.applyOptions({ width: this.chartContainer.nativeElement.clientWidth });
-    this.updateCanvasSize();
+    // Debounce resize for Safari which throttles these events
+    if (this.resizeTimeout) clearTimeout(this.resizeTimeout);
+
+    this.resizeTimeout = setTimeout(() => {
+      if (!this.ensureChart() || !this.chartContainer) return;
+
+      const width = this.chartContainer.nativeElement.clientWidth;
+      if (width === 0) return;
+
+      this.chart.applyOptions({ width });
+      this.updateCanvasSize();
+      this.resizeTimeout = null;
+    }, 100);
   };
 
   private async initChart(): Promise<void> {
@@ -237,14 +263,13 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
 
     const t = this.themes[this.currentTheme];
 
-    // ✅ v5: use named createChart import
     this.chart = createChart(container, {
       width:  container.clientWidth,
       height: 600,
       layout: {
         background:  { color: t.background },
         textColor:   t.textColor,
-        fontFamily:  'Arial',
+        fontFamily:  'Arial, sans-serif',
         fontSize:    12,
       },
       grid: {
@@ -260,10 +285,16 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
         fixRightEdge:   false,
         rightOffset:    5,
         tickMarkFormatter: (time: any) => {
-          const d     = new Date(time * 1000);
-          const month = d.toLocaleString('en-US', { month: 'short' });
-          const day   = d.getDate();
-          return `${month} ${day}`;
+          try {
+            const d = new Date(time * 1000);
+            if (isNaN(d.getTime())) return '';
+            const month = d.toLocaleString('en-US', { month: 'short' });
+            const day = d.getDate();
+            return `${month} ${day}`;
+          } catch (e) {
+            console.debug('[Chart] Tick formatter error:', e);
+            return '';
+          }
         },
       },
       rightPriceScale: {
@@ -283,7 +314,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       handleScale:  { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
     });
 
-    // ✅ v5: chart.addSeries(CandlestickSeries, { ...options })
     this.candlestickSeries = this.chart.addSeries(CandlestickSeries, {
       upColor:          '#26a69a',
       downColor:        '#ef5350',
@@ -349,7 +379,9 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     const canvas    = this.handleCanvas?.nativeElement;
     const container = this.chartContainer?.nativeElement;
     if (!canvas || !container) return;
-    const dpr        = window.devicePixelRatio || 1;
+
+    const dpr = this.getDevicePixelRatio();
+
     canvas.width     = container.clientWidth  * dpr;
     canvas.height    = container.clientHeight * dpr;
     canvas.style.width    = container.clientWidth  + 'px';
@@ -358,17 +390,34 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     canvas.style.top      = '0';
     canvas.style.left     = '0';
     canvas.style.pointerEvents = 'none';
-    this.handleCanvasContext = canvas.getContext('2d');
-    this.handleCanvasContext?.setTransform(dpr, 0, 0, dpr, 0, 0);
+    canvas.style.transform = 'translateZ(0)'; // GPU acceleration
+    canvas.style.willChange = 'contents';
+
+    const ctx = canvas.getContext('2d', { alpha: true });
+    if (ctx) {
+      // Disable image smoothing for crisp lines
+      ctx.imageSmoothingEnabled = false;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    this.handleCanvasContext = ctx;
     this.startHandleRendering();
   }
 
   private startHandleRendering(): void {
     if (this.animationFrameId) cancelAnimationFrame(this.animationFrameId);
-    const draw = () => {
-      this.drawHandles();
+
+    let lastFrameTime = 0;
+    const minFrameInterval = 16; // 60 FPS minimum
+
+    const draw = (currentTime: number) => {
+      // Prevent excessive rendering
+      if (currentTime - lastFrameTime >= minFrameInterval) {
+        this.drawHandles();
+        lastFrameTime = currentTime;
+      }
       this.animationFrameId = requestAnimationFrame(draw);
     };
+
     this.animationFrameId = requestAnimationFrame(draw);
   }
 
@@ -394,20 +443,33 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     const isActive = (this.isExtendingLeftHandle && type === 'left') ||
                      (this.isExtendingRightHandle && type === 'right');
     const radius   = isActive ? 8 : 6;
+
     ctx.save();
+
+    // Outer glow
     ctx.beginPath();
     ctx.arc(x, y, radius + 2, 0, Math.PI * 2);
     ctx.fillStyle = isActive ? 'rgba(255,165,0,0.3)' : 'rgba(255,165,0,0.15)';
     ctx.fill();
+    ctx.closePath();
+
+    // Main circle
     ctx.beginPath();
     ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.fillStyle = isActive ? '#FFA500' : '#FF8C00';
     ctx.fill();
+    ctx.closePath();
+
+    // Border - increased line width for Safari
     ctx.beginPath();
     ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.strokeStyle = '#FFFFFF';
-    ctx.lineWidth   = 1.5;
+    ctx.lineWidth   = this.isSafari() ? 2 : 1.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
     ctx.stroke();
+    ctx.closePath();
+
     ctx.restore();
   }
 
@@ -421,12 +483,20 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     const canvas    = this.handleCanvas?.nativeElement;
     const container = this.chartContainer?.nativeElement;
     if (!canvas || !container) return;
-    const dpr     = window.devicePixelRatio || 1;
+
+    const dpr = this.getDevicePixelRatio();
+
     canvas.width  = container.clientWidth  * dpr;
     canvas.height = container.clientHeight * dpr;
     canvas.style.width  = container.clientWidth  + 'px';
     canvas.style.height = container.clientHeight + 'px';
-    this.handleCanvasContext?.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.imageSmoothingEnabled = false;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
     this.drawHandles();
   }
 
@@ -497,7 +567,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
         previewLineStyle = 1;
       }
 
-      // ✅ v5: chart.addSeries(LineSeries, { ...options })
       this.previewSeries = this.chart.addSeries(LineSeries, {
         color:             previewColor,
         lineWidth:         2,
@@ -823,12 +892,17 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     const container = this.chartContainer?.nativeElement;
     if (!container) return;
     const rect = container.getBoundingClientRect();
+
+    // Cross-browser coordinate handling for Safari
+    const clientX = event.clientX || 0;
+    const clientY = event.clientY || 0;
+
     if (
-      event.clientX < rect.left || event.clientX > rect.right ||
-      event.clientY < rect.top  || event.clientY > rect.bottom
+      clientX < rect.left || clientX > rect.right ||
+      clientY < rect.top  || clientY > rect.bottom
     ) return;
 
-    const sp: ScreenPoint = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    const sp: ScreenPoint = { x: clientX - rect.left, y: clientY - rect.top };
 
     const handle = this.getHandleAtPoint(sp);
     if (handle) {
@@ -896,7 +970,11 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     const container = this.chartContainer?.nativeElement;
     if (!container) return;
     const rect = container.getBoundingClientRect();
-    const sp: ScreenPoint = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+
+    const clientX = event.clientX || 0;
+    const clientY = event.clientY || 0;
+
+    const sp: ScreenPoint = { x: clientX - rect.left, y: clientY - rect.top };
     const curr = this.screenToChartPoint(sp);
     if (!curr || !this.dragStartPoint || !this.dragLineSnapshot) return;
 
@@ -921,7 +999,11 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     const container = this.chartContainer?.nativeElement;
     if (!container) return;
     const rect = container.getBoundingClientRect();
-    const sp: ScreenPoint = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+
+    const clientX = event.clientX || 0;
+    const clientY = event.clientY || 0;
+
+    const sp: ScreenPoint = { x: clientX - rect.left, y: clientY - rect.top };
     const cp = this.screenToChartPoint(sp);
     if (!cp) return;
 
@@ -1032,7 +1114,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
           { time: from, value: line.startPrice },
           { time: to,   value: line.startPrice },
         ];
-        // ✅ v5: addSeries(LineSeries, { ...options })
         const series = this.chart.addSeries(LineSeries, {
           color, lineWidth: width,
           priceLineVisible: false, lastValueVisible: false,
@@ -1082,7 +1163,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
           break;
       }
 
-      // ✅ v5: addSeries(LineSeries, { ...options })
       const series = this.chart.addSeries(LineSeries, {
         color, lineWidth: width,
         priceLineVisible: false, lastValueVisible: false,
@@ -1108,7 +1188,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     if (sorted.length < 2) return;
     const t1 = Math.min(sorted[0].time, sorted[1].time);
     const t2 = Math.max(sorted[0].time, sorted[1].time);
-    // ✅ v5: addSeries(LineSeries, { ...options })
     const series = this.chart.addSeries(LineSeries, {
       color, lineWidth: width, priceLineVisible: false, lastValueVisible: false,
     });
@@ -1144,7 +1223,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
         existing.setData(data);
         return;
       }
-      // ✅ v5: addSeries(LineSeries, { ...options })
       const series = this.chart.addSeries(LineSeries, {
         color, lineWidth: width, lineStyle,
         priceLineVisible: false, lastValueVisible: false,
@@ -1208,7 +1286,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       this.hintBlinkSeries.delete(adminLine.id);
     }
 
-    // ✅ v5: addSeries(LineSeries, { ...options })
     const series = this.chart.addSeries(LineSeries, {
       color:                  '#FFD700',
       lineWidth:              3,
@@ -1378,7 +1455,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     const BLINK_MS = 300;
     const BLINKS   = 3;
 
-    // ✅ v5: addSeries(LineSeries, { ...options })
     const flashSeries = this.chart.addSeries(LineSeries, {
       color:                  colorOn,
       lineWidth:              4,
@@ -1695,7 +1771,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
           if (!isNaN(d.getTime())) return Math.floor(d.getTime() / 1000);
         }
         const iso = new Date(raw);
-        if (!isNaN(iso.getTime())) return Math.floor(iso.getTime() / 1000);
+        if (!isNaN(iso.getTime())) return Math.floor(iso.getTime()  / 1000);
       }
       return NaN;
     };
