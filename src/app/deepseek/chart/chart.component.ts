@@ -1,7 +1,8 @@
 // chart.component.ts (FIXED for cross-browser compatibility)
 import {
   Component, ElementRef, ViewChild,
-  AfterViewInit, OnDestroy, HostListener,
+  AfterViewInit, OnDestroy,
+  ChangeDetectorRef, NgZone,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -17,7 +18,7 @@ import {
 import { DrawingService } from '../services/drawing.service';
 import { AuthService } from '../services/auth.service';
 import { DrawingLine, Point, ScreenPoint, ThemeMode } from '../models/drawing.model';
-import { Observable, Subject, takeUntil } from 'rxjs';
+import { Subject, takeUntil } from 'rxjs';
 import { HttpClient } from '@angular/common/http';
 import { TestService } from '../services/test.service';
 
@@ -31,6 +32,7 @@ type ToolMode = 'trendline' | 'hline' | 'vline' | 'ray' | 'straightline' | 'sele
   styleUrls: ['./chart.component.scss'],
 })
 export class ChartComponent implements AfterViewInit, OnDestroy {
+
   // ── Unsubscribe from chart events ──
   private chartClickSubscription: (() => void) | null = null;
   private chartCrosshairSubscription: (() => void) | null = null;
@@ -42,6 +44,12 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   private movePreviewSeries: any = null;
   private dragLineSnapshot: DrawingLine | null = null;
   private updatingPreview: boolean = false;
+
+  // ── Bound listener references (needed for removeEventListener) ──
+  private _boundMouseDown!: (e: MouseEvent) => void;
+  private _boundMouseMove!: (e: MouseEvent) => void;
+  private _boundMouseUp!: (e: MouseEvent) => void;
+  private _boundKeyDown!: (e: KeyboardEvent) => void;
 
   shiftHeld: boolean = false;
 
@@ -119,7 +127,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
 
   // ── VALIDATION FLASH STATE ──
   private activeFlashInterval: any = null;
-  private activeFlashSeries: any   = null;
+  private activeFlashSeries: any = null;
 
   constructor(
     private http: HttpClient,
@@ -128,6 +136,8 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     private authService: AuthService,
     private drawingService: DrawingService,
     private testService: TestService,
+    private cdr: ChangeDetectorRef,
+    private ngZone: NgZone,
   ) {}
 
   // ==================== LIFECYCLE ====================
@@ -149,6 +159,18 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       this.matchedCount = 0;
     }
 
+    // Register mouse/key listeners OUTSIDE Angular zone to prevent NG0100
+    this.ngZone.runOutsideAngular(() => {
+      this._boundMouseDown = this.onMouseDown.bind(this);
+      this._boundMouseMove = this.onMouseMove.bind(this);
+      this._boundMouseUp   = this.onMouseUp.bind(this);
+      this._boundKeyDown   = this.onKeyDown.bind(this);
+      document.addEventListener('mousedown', this._boundMouseDown);
+      document.addEventListener('mousemove', this._boundMouseMove);
+      document.addEventListener('mouseup',   this._boundMouseUp);
+      document.addEventListener('keydown',   this._boundKeyDown);
+    });
+
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         this.initChart().then(() => this.loadData());
@@ -158,6 +180,12 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.stopAllHintBlinks();
+
+    // Remove manually registered listeners
+    document.removeEventListener('mousedown', this._boundMouseDown);
+    document.removeEventListener('mousemove', this._boundMouseMove);
+    document.removeEventListener('mouseup',   this._boundMouseUp);
+    document.removeEventListener('keydown',   this._boundKeyDown);
 
     this.chartClickSubscription?.();
     this.chartCrosshairSubscription?.();
@@ -205,9 +233,9 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     if (!this.ensureChart()) return;
     const t = this.themes[this.currentTheme];
     this.chart.applyOptions({
-      layout:         { background: { color: t.background }, textColor: t.textColor },
-      grid:           { vertLines: { color: t.gridColor }, horzLines: { color: t.gridColor } },
-      timeScale:      { borderColor: t.borderColor },
+      layout:          { background: { color: t.background }, textColor: t.textColor },
+      grid:            { vertLines: { color: t.gridColor }, horzLines: { color: t.gridColor } },
+      timeScale:       { borderColor: t.borderColor },
       rightPriceScale: { borderColor: t.borderColor },
     });
     this.renderLines();
@@ -229,25 +257,26 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   }
 
   private getDevicePixelRatio(): number {
-    // Safari has issues with DPR on retina - use 1 for consistency
-    if (this.isSafari()) {
-      return 1; // Safari handles canvas scaling internally
-    }
+    if (this.isSafari()) return 1;
     return typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1;
+  }
+
+  // ── Safe setter for cursorIsOverInteractable ──
+  private setCursorInteractable(val: boolean): void {
+    if (this.cursorIsOverInteractable !== val) {
+      this.cursorIsOverInteractable = val;
+      this.ngZone.run(() => this.cdr.markForCheck());
+    }
   }
 
   // ==================== INIT CHART ====================
 
   private handleResize = (): void => {
-    // Debounce resize for Safari which throttles these events
     if (this.resizeTimeout) clearTimeout(this.resizeTimeout);
-
     this.resizeTimeout = setTimeout(() => {
       if (!this.ensureChart() || !this.chartContainer) return;
-
       const width = this.chartContainer.nativeElement.clientWidth;
       if (width === 0) return;
-
       this.chart.applyOptions({ width });
       this.updateCanvasSize();
       this.resizeTimeout = null;
@@ -267,10 +296,10 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       width:  container.clientWidth,
       height: 600,
       layout: {
-        background:  { color: t.background },
-        textColor:   t.textColor,
-        fontFamily:  'Arial, sans-serif',
-        fontSize:    12,
+        background: { color: t.background },
+        textColor:  t.textColor,
+        fontFamily: 'Arial, sans-serif',
+        fontSize:   12,
       },
       grid: {
         vertLines: { color: t.gridColor, style: 1 },
@@ -289,7 +318,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
             const d = new Date(time * 1000);
             if (isNaN(d.getTime())) return '';
             const month = d.toLocaleString('en-US', { month: 'short' });
-            const day = d.getDate();
+            const day   = d.getDate();
             return `${month} ${day}`;
           } catch (e) {
             console.debug('[Chart] Tick formatter error:', e);
@@ -320,8 +349,8 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       borderVisible:    false,
       wickUpColor:      '#26a69a',
       wickDownColor:    '#ef5350',
-      priceLineVisible:   false,
-      lastValueVisible:   true,
+      priceLineVisible: false,
+      lastValueVisible: true,
     });
 
     this.chart.priceScale('right').applyOptions({ visible: true, autoScale: true, mode: 0 });
@@ -335,8 +364,8 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       if (!param?.point) return;
       if (this.clickTimeout) {
         clearTimeout(this.clickTimeout);
-        this.clickTimeout    = null;
-        this.isDoubleClick   = true;
+        this.clickTimeout  = null;
+        this.isDoubleClick = true;
         return;
       }
       this.isDoubleClick = false;
@@ -382,20 +411,19 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
 
     const dpr = this.getDevicePixelRatio();
 
-    canvas.width     = container.clientWidth  * dpr;
-    canvas.height    = container.clientHeight * dpr;
+    canvas.width  = container.clientWidth  * dpr;
+    canvas.height = container.clientHeight * dpr;
     canvas.style.width    = container.clientWidth  + 'px';
     canvas.style.height   = container.clientHeight + 'px';
     canvas.style.position = 'absolute';
     canvas.style.top      = '0';
     canvas.style.left     = '0';
     canvas.style.pointerEvents = 'none';
-    canvas.style.transform = 'translateZ(0)'; // GPU acceleration
+    canvas.style.transform  = 'translateZ(0)';
     canvas.style.willChange = 'contents';
 
     const ctx = canvas.getContext('2d', { alpha: true });
     if (ctx) {
-      // Disable image smoothing for crisp lines
       ctx.imageSmoothingEnabled = false;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     }
@@ -406,19 +434,20 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   private startHandleRendering(): void {
     if (this.animationFrameId) cancelAnimationFrame(this.animationFrameId);
 
-    let lastFrameTime = 0;
-    const minFrameInterval = 16; // 60 FPS minimum
+    let lastFrameTime    = 0;
+    const minFrameInterval = 16;
 
-    const draw = (currentTime: number) => {
-      // Prevent excessive rendering
-      if (currentTime - lastFrameTime >= minFrameInterval) {
-        this.drawHandles();
-        lastFrameTime = currentTime;
-      }
+    // Run entirely outside Angular zone — rAF must not trigger change detection
+    this.ngZone.runOutsideAngular(() => {
+      const draw = (currentTime: number) => {
+        if (currentTime - lastFrameTime >= minFrameInterval) {
+          this.drawHandles();
+          lastFrameTime = currentTime;
+        }
+        this.animationFrameId = requestAnimationFrame(draw);
+      };
       this.animationFrameId = requestAnimationFrame(draw);
-    };
-
-    this.animationFrameId = requestAnimationFrame(draw);
+    });
   }
 
   private drawHandles(): void {
@@ -440,33 +469,30 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   private drawHandle(x: number, y: number, type: string): void {
     if (!this.handleCanvasContext) return;
     const ctx      = this.handleCanvasContext;
-    const isActive = (this.isExtendingLeftHandle && type === 'left') ||
+    const isActive = (this.isExtendingLeftHandle  && type === 'left') ||
                      (this.isExtendingRightHandle && type === 'right');
     const radius   = isActive ? 8 : 6;
 
     ctx.save();
 
-    // Outer glow
     ctx.beginPath();
     ctx.arc(x, y, radius + 2, 0, Math.PI * 2);
     ctx.fillStyle = isActive ? 'rgba(255,165,0,0.3)' : 'rgba(255,165,0,0.15)';
     ctx.fill();
     ctx.closePath();
 
-    // Main circle
     ctx.beginPath();
     ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.fillStyle = isActive ? '#FFA500' : '#FF8C00';
     ctx.fill();
     ctx.closePath();
 
-    // Border - increased line width for Safari
     ctx.beginPath();
     ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.strokeStyle = '#FFFFFF';
     ctx.lineWidth   = this.isSafari() ? 2 : 1.5;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
+    ctx.lineCap     = 'round';
+    ctx.lineJoin    = 'round';
     ctx.stroke();
     ctx.closePath();
 
@@ -496,7 +522,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       ctx.imageSmoothingEnabled = false;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     }
-
     this.drawHandles();
   }
 
@@ -530,8 +555,8 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   // ==================== DRAWING ====================
 
   private cancelDrawing(): void {
-    this.isDrawing        = false;
-    this.hasFirstPoint    = false;
+    this.isDrawing         = false;
+    this.hasFirstPoint     = false;
     this.drawingStartPoint = null;
     this.stopAllHintBlinks();
     if (this.previewSeries) {
@@ -568,11 +593,11 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       }
 
       this.previewSeries = this.chart.addSeries(LineSeries, {
-        color:             previewColor,
-        lineWidth:         2,
-        lineStyle:         previewLineStyle,
-        priceLineVisible:  false,
-        lastValueVisible:  false,
+        color:            previewColor,
+        lineWidth:        2,
+        lineStyle:        previewLineStyle,
+        priceLineVisible: false,
+        lastValueVisible: false,
       });
       this.hasFirstPoint = true;
     } else {
@@ -611,10 +636,10 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       type:         this.userRole === 'admin' ? 'admin' : 'user',
       tool:         this.activeTool === 'straightline' ? 'straightline' : this.activeTool as any,
       originalTool: this.activeTool,
-      startX:       start.x,   startY: start.y,
-      endX:         end.x,     endY:   end.y,
-      startTime:    start.time, startPrice: start.price,
-      endTime:      end.time,   endPrice:   end.price,
+      startX:       start.x,      startY:      start.y,
+      endX:         end.x,        endY:        end.y,
+      startTime:    start.time,   startPrice:  start.price,
+      endTime:      end.time,     endPrice:    end.price,
       color:        this.userRole === 'admin' ? '#FF6B6B' : '#FFFFFF',
       createdAt:    new Date(),
     };
@@ -649,12 +674,10 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       if (this.activeTool === 'straightline') {
         const tr = this.chart.timeScale().getVisibleRange();
         if (tr) {
-          const from = tr.from as number;
-          const to   = tr.to   as number;
           this.previewSeries.applyOptions({ color: '#FFFFFF', lineWidth: 2, lineStyle: 1 });
           this.previewSeries.setData([
-            { time: from, value: cp.price },
-            { time: to,   value: cp.price },
+            { time: tr.from as number, value: cp.price },
+            { time: tr.to   as number, value: cp.price },
           ]);
         }
         return;
@@ -882,9 +905,8 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     }, 300);
   }
 
-  // ==================== DRAG & EXTEND HANDLERS ====================
+  // ==================== MOUSE EVENT HANDLERS (no @HostListener — registered outside zone) ====================
 
-  @HostListener('document:mousedown', ['$event'])
   onMouseDown(event: MouseEvent): void {
     this.dragDistance = 0;
     if (this.activeTool !== 'select') return;
@@ -893,7 +915,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     if (!container) return;
     const rect = container.getBoundingClientRect();
 
-    // Cross-browser coordinate handling for Safari
     const clientX = event.clientX || 0;
     const clientY = event.clientY || 0;
 
@@ -908,16 +929,18 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     if (handle) {
       event.preventDefault();
       event.stopPropagation();
-      this.chart.applyOptions({
-        handleScroll: { vertTouchDrag: false, horzTouchDrag: false, mouseWheel: false, pressedMouseMove: false },
-        handleScale:  { axisPressedMouseMove: false, mouseWheel: false, pinch: false },
+      this.ngZone.run(() => {
+        this.chart.applyOptions({
+          handleScroll: { vertTouchDrag: false, horzTouchDrag: false, mouseWheel: false, pressedMouseMove: false },
+          handleScale:  { axisPressedMouseMove: false, mouseWheel: false, pinch: false },
+        });
+        this.extendingLineIdHandle = handle.lineId;
+        const selected = this.userLines.find(l => l.id === handle.lineId)
+          ?? this.adminLines.find(l => l.id === handle.lineId);
+        if (selected) this.originalLineState = structuredClone(selected);
+        if (handle.type === 'left') { this.isExtendingLeftHandle  = true; }
+        else                        { this.isExtendingRightHandle = true; }
       });
-      this.extendingLineIdHandle = handle.lineId;
-      const selected = this.userLines.find(l => l.id === handle.lineId)
-        ?? this.adminLines.find(l => l.id === handle.lineId);
-      if (selected) this.originalLineState = structuredClone(selected);
-      if (handle.type === 'left') { this.isExtendingLeftHandle  = true; }
-      else                        { this.isExtendingRightHandle = true; }
       return;
     }
 
@@ -927,30 +950,31 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     event.preventDefault();
     event.stopPropagation();
 
-    this.selectedLineId    = hit.id;
-    this.selectedLineOwner = hit.owner;
-    this.draggedLineId     = hit.id;
+    this.ngZone.run(() => {
+      this.selectedLineId    = hit.id;
+      this.selectedLineOwner = hit.owner;
+      this.draggedLineId     = hit.id;
 
-    this.chart.applyOptions({
-      handleScroll: { vertTouchDrag: false, horzTouchDrag: false, mouseWheel: false, pressedMouseMove: false },
-      handleScale:  { axisPressedMouseMove: false, mouseWheel: false, pinch: false },
+      this.chart.applyOptions({
+        handleScroll: { vertTouchDrag: false, horzTouchDrag: false, mouseWheel: false, pressedMouseMove: false },
+        handleScale:  { axisPressedMouseMove: false, mouseWheel: false, pinch: false },
+      });
+
+      this.isDraggingLine = true;
+
+      const selectedLine = hit.owner === 'user'
+        ? this.userLines.find(l => l.id === hit.id)
+        : this.adminLines.find(l => l.id === hit.id);
+      if (!selectedLine) return;
+
+      this.dragLineSnapshot = structuredClone(selectedLine);
+      const chartPoint = this.screenToChartPoint(sp);
+      if (chartPoint) this.dragStartPoint = { time: chartPoint.time, price: chartPoint.price };
+
+      this.renderLines();
     });
-
-    this.isDraggingLine = true;
-
-    const selectedLine = hit.owner === 'user'
-      ? this.userLines.find(l => l.id === hit.id)
-      : this.adminLines.find(l => l.id === hit.id);
-    if (!selectedLine) return;
-
-    this.dragLineSnapshot = structuredClone(selectedLine);
-    const chartPoint = this.screenToChartPoint(sp);
-    if (chartPoint) this.dragStartPoint = { time: chartPoint.time, price: chartPoint.price };
-
-    this.renderLines();
   }
 
-  @HostListener('document:mousemove', ['$event'])
   onMouseMove(event: MouseEvent): void {
     this.shiftHeld = event.shiftKey;
 
@@ -964,17 +988,102 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       this.handleLineExtension(event);
       return;
     }
+
+    // Update cursor state via safe helper (triggers markForCheck inside zone)
+    if (this.activeTool === 'select') {
+      const container = this.chartContainer?.nativeElement;
+      if (container) {
+        const rect = container.getBoundingClientRect();
+        const sp: ScreenPoint = {
+          x: event.clientX - rect.left,
+          y: event.clientY - rect.top,
+        };
+        const overHandle = !!this.getHandleAtPoint(sp);
+        const overLine   = !!this.getLineAtPoint(sp);
+        this.setCursorInteractable(overHandle || overLine);
+      }
+    } else {
+      this.setCursorInteractable(false);
+    }
   }
+
+  onMouseUp(): void {
+    this.ngZone.run(() => {
+      if (!this.ensureChart()) return;
+
+      this.chart.applyOptions({
+        handleScroll: { vertTouchDrag: true, horzTouchDrag: true, mouseWheel: true, pressedMouseMove: true },
+        handleScale:  { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+      });
+
+      if (this.isDraggingLine && this.draggedLineId) this.saveDraggedLine();
+
+      if ((this.isExtendingLeftHandle || this.isExtendingRightHandle) && this.extendingLineIdHandle) {
+        this.saveExtendedLine();
+      }
+
+      this.isExtendingLeftHandle  = false;
+      this.isExtendingRightHandle = false;
+      this.extendingLineIdHandle  = null;
+      this.isDraggingLine   = false;
+      this.draggedLineId    = null;
+      this.dragLineSnapshot = null;
+      this.dragStartPoint   = null;
+      this.dragDistance     = 0;
+      this.renderLines();
+    });
+  }
+
+  onKeyDown(event: KeyboardEvent): void {
+    const tag = (event.target as HTMLElement)?.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+
+    this.ngZone.run(() => {
+      if (event.key === 'Delete' && this.activeTool === 'select' && this.selectedLineId) {
+        event.preventDefault();
+        this.deleteSelectedLine();
+        return;
+      }
+      if (event.key === 'Escape') {
+        if (this.isDrawing) this.cancelDrawing();
+        this.setActiveTool('select');
+        this.selectedLineId = null;
+        this.clearHandles();
+        this.renderLines();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd') {
+        event.preventDefault();
+        this.duplicateSelectedLine();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        if (this.userRole === 'admin') this.saveAllLines();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'r') {
+        event.preventDefault();
+        this.resetAllLines();
+        return;
+      }
+      if (event.key === '1') this.setActiveTool('select');
+      if (event.key === '2') this.setActiveTool('trendline');
+      if (event.key === '3') this.setActiveTool('straightline');
+    });
+  }
+
+  // ==================== DRAG & EXTEND INTERNALS ====================
 
   private handleLineDrag(event: MouseEvent): void {
     const container = this.chartContainer?.nativeElement;
     if (!container) return;
     const rect = container.getBoundingClientRect();
 
-    const clientX = event.clientX || 0;
-    const clientY = event.clientY || 0;
-
-    const sp: ScreenPoint = { x: clientX - rect.left, y: clientY - rect.top };
+    const sp: ScreenPoint = {
+      x: (event.clientX || 0) - rect.left,
+      y: (event.clientY || 0) - rect.top,
+    };
     const curr = this.screenToChartPoint(sp);
     if (!curr || !this.dragStartPoint || !this.dragLineSnapshot) return;
 
@@ -1000,10 +1109,10 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     if (!container) return;
     const rect = container.getBoundingClientRect();
 
-    const clientX = event.clientX || 0;
-    const clientY = event.clientY || 0;
-
-    const sp: ScreenPoint = { x: clientX - rect.left, y: clientY - rect.top };
+    const sp: ScreenPoint = {
+      x: (event.clientX || 0) - rect.left,
+      y: (event.clientY || 0) - rect.top,
+    };
     const cp = this.screenToChartPoint(sp);
     if (!cp) return;
 
@@ -1020,32 +1129,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     }
 
     this.renderSingleLine(line);
-  }
-
-  @HostListener('document:mouseup')
-  onMouseUp(): void {
-    if (!this.ensureChart()) return;
-
-    this.chart.applyOptions({
-      handleScroll: { vertTouchDrag: true, horzTouchDrag: true, mouseWheel: true, pressedMouseMove: true },
-      handleScale:  { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
-    });
-
-    if (this.isDraggingLine && this.draggedLineId) this.saveDraggedLine();
-
-    if ((this.isExtendingLeftHandle || this.isExtendingRightHandle) && this.extendingLineIdHandle) {
-      this.saveExtendedLine();
-    }
-
-    this.isExtendingLeftHandle  = false;
-    this.isExtendingRightHandle = false;
-    this.extendingLineIdHandle  = null;
-    this.isDraggingLine   = false;
-    this.draggedLineId    = null;
-    this.dragLineSnapshot = null;
-    this.dragStartPoint   = null;
-    this.dragDistance     = 0;
-    this.renderLines();
   }
 
   private saveDraggedLine(): void {
@@ -1103,23 +1186,22 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       this.removeSeries(line.id);
 
       const isSelected = this.selectedLineId === line.id;
-      let color:     string;
+      let color: string;
       let width     = isSelected ? 3 : 2;
       let lineStyle = 0;
 
       if (line.tool === 'straightline') {
         color     = isSelected ? '#FFA500' : '#FFFFFF';
         lineStyle = 1;
-        const data = [
-          { time: from, value: line.startPrice },
-          { time: to,   value: line.startPrice },
-        ];
         const series = this.chart.addSeries(LineSeries, {
           color, lineWidth: width,
           priceLineVisible: false, lastValueVisible: false,
           crosshairMarkerVisible: false, lineStyle,
         });
-        series.setData(data);
+        series.setData([
+          { time: from, value: line.startPrice },
+          { time: to,   value: line.startPrice },
+        ]);
         this.lineSeriesMap.set(line.id, series);
         return;
       }
@@ -1178,9 +1260,9 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   private renderVLine(line: DrawingLine, color: string, width: number): void {
     if (!this.chartData.length) return;
     const allPrices = this.chartData.flatMap((d: any) => [d.low, d.high]);
-    const minP = Math.min(...allPrices);
-    const maxP = Math.max(...allPrices);
-    const pad  = (maxP - minP) * 0.05;
+    const minP   = Math.min(...allPrices);
+    const maxP   = Math.max(...allPrices);
+    const pad    = (maxP - minP) * 0.05;
     const target = line.startTime;
     const sorted = [...this.chartData].sort(
       (a, b) => Math.abs(a.time - target) - Math.abs(b.time - target)
@@ -1199,7 +1281,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     if (!this.ensureChart()) return;
     try {
       const isSelected = this.selectedLineId === line.id;
-      let color:     string;
+      let color: string;
       let width     = isSelected ? 3 : 2;
       let lineStyle = 0;
 
@@ -1260,9 +1342,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     const nowInRangeIds = new Set(inRangeLines.map(l => l.id));
 
     for (const id of this.hintPrevInRange) {
-      if (!nowInRangeIds.has(id)) {
-        this.hintBlinkFired.delete(id);
-      }
+      if (!nowInRangeIds.has(id)) this.hintBlinkFired.delete(id);
     }
 
     for (const al of inRangeLines) {
@@ -1314,9 +1394,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
           this.hintBlinkSeries.delete(adminLine.id);
           this.hintBlinkActive.delete(adminLine.id);
         } else {
-          series.applyOptions({
-            color: tick % 2 === 0 ? '#FFD700' : 'rgba(0,0,0,0)',
-          });
+          series.applyOptions({ color: tick % 2 === 0 ? '#FFD700' : 'rgba(0,0,0,0)' });
         }
       } catch {
         clearInterval(interval);
@@ -1352,10 +1430,8 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
 
     if (!v.isValid) {
       this.renderLines();
-
       const hintLine = v.correctLine
         ?? this.drawingService.findAdminLineContainingTimeRange(this.testId, line);
-
       if (hintLine) {
         this.flashAdminLineInRange(hintLine, line, 'hint');
         this.showMessage('✗ Close! But slope/price is incorrect. See the orange blinking line.', 'error');
@@ -1669,7 +1745,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     try {
       if (sp.x < 0 || sp.y < 0) return null;
       const time  = this.chart.timeScale().coordinateToTime(sp.x) as number | null;
-      const price = this.candlestickSeries.coordinateToPrice(sp.y)  as number | null;
+      const price = this.candlestickSeries.coordinateToPrice(sp.y) as number | null;
       if (time == null || price == null || isNaN(time) || isNaN(price)) return null;
       return { x: sp.x, y: sp.y, time, price };
     } catch (err) {
@@ -1680,8 +1756,8 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
 
   private chartToScreenPoint(time: number, price: number): ScreenPoint | null {
     try {
-      const x = this.chart.timeScale().timeToCoordinate(time)          as number | null;
-      const y = this.candlestickSeries.priceToCoordinate(price)         as number | null;
+      const x = this.chart.timeScale().timeToCoordinate(time)    as number | null;
+      const y = this.candlestickSeries.priceToCoordinate(price)  as number | null;
       if (x == null || y == null || isNaN(x) || isNaN(y)) return null;
       return { x, y };
     } catch (err) {
@@ -1771,7 +1847,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
           if (!isNaN(d.getTime())) return Math.floor(d.getTime() / 1000);
         }
         const iso = new Date(raw);
-        if (!isNaN(iso.getTime())) return Math.floor(iso.getTime()  / 1000);
+        if (!isNaN(iso.getTime())) return Math.floor(iso.getTime() / 1000);
       }
       return NaN;
     };
@@ -1833,45 +1909,5 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     this.validationMessage = msg;
     this.messageType       = type;
     setTimeout(() => { this.validationMessage = ''; }, 3000);
-  }
-
-  // ==================== KEYBOARD SHORTCUTS ====================
-
-  @HostListener('document:keydown', ['$event'])
-  onKeyDown(event: KeyboardEvent): void {
-    const tag = (event.target as HTMLElement)?.tagName;
-    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
-
-    if (event.key === 'Delete' && this.activeTool === 'select' && this.selectedLineId) {
-      event.preventDefault();
-      this.deleteSelectedLine();
-      return;
-    }
-    if (event.key === 'Escape') {
-      if (this.isDrawing) this.cancelDrawing();
-      this.setActiveTool('select');
-      this.selectedLineId = null;
-      this.clearHandles();
-      this.renderLines();
-      return;
-    }
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd') {
-      event.preventDefault();
-      this.duplicateSelectedLine();
-      return;
-    }
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
-      event.preventDefault();
-      if (this.userRole === 'admin') this.saveAllLines();
-      return;
-    }
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'r') {
-      event.preventDefault();
-      this.resetAllLines();
-      return;
-    }
-    if (event.key === '1') this.setActiveTool('select');
-    if (event.key === '2') this.setActiveTool('trendline');
-    if (event.key === '3')  this.setActiveTool('straightline');
   }
 }
