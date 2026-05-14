@@ -1,5 +1,4 @@
 // services/file-upload.service.ts
-
 import { Injectable } from '@angular/core';
 import * as XLSX from 'xlsx';
 import * as Papa from 'papaparse';
@@ -17,8 +16,7 @@ export interface ChartDataPoint {
 export class FileUploadService {
 
   /**
-   * Parse any date/time value into a Unix timestamp (seconds).
-   * Works in all browsers, including Safari and Linux.
+   * Universal date parser – works on Safari, Firefox, Chrome, Edge.
    */
   private parseDateToTimestamp(dateValue: any): number {
     if (dateValue == null || dateValue === '') return NaN;
@@ -37,76 +35,70 @@ export class FileUploadService {
       return NaN;
     }
 
-    const str = String(dateValue).trim();
+    let str = String(dateValue).trim();
     if (str === '') return NaN;
 
     // Try as integer (maybe Excel serial)
     const asNumber = Number(str);
-    if (!isNaN(asNumber) && asNumber > 0 && asNumber < 100000 && str.indexOf('.') === -1) {
+    if (!isNaN(asNumber) && asNumber > 0 && asNumber < 100000 && !str.includes('.')) {
       const excelEpoch = 25569;
       const seconds = (asNumber - excelEpoch) * 86400;
       return Math.floor(seconds);
     }
 
-    // Try to parse common date formats
-    let parts: string[] = [];
+    // Replace space with 'T' for ISO-like strings (fixes Safari)
+    if (str.includes(' ') && (str.includes('-') || str.includes('/'))) {
+      str = str.replace(' ', 'T');
+    }
+
+    // Try native Date.parse (works for ISO 8601 after replacing space)
+    let timestamp = Date.parse(str);
+    if (!isNaN(timestamp)) {
+      return Math.floor(timestamp / 1000);
+    }
+
+    // Manually parse common formats: DD/MM/YYYY, MM/DD/YYYY, DD-MM-YYYY, etc.
+    const parts: string[] = [];
     let separator = '';
     if (str.includes('-')) separator = '-';
     else if (str.includes('/')) separator = '/';
     else if (str.includes('.')) separator = '.';
 
     if (separator) {
-      parts = str.split(separator);
-      let year = 0, month = 0, day = 0;
+      const [p1, p2, p3] = str.split(separator);
+      const year = p3 && p3.length === 4 ? parseInt(p3, 10) : (p1.length === 4 ? parseInt(p1, 10) : 0);
+      let month = 0, day = 0;
 
-      if (parts.length === 3) {
-        const first = parseInt(parts[0], 10);
-        const second = parseInt(parts[1], 10);
-        const third = parseInt(parts[2], 10);
-
+      if (year === parseInt(p1, 10)) {
         // YYYY-MM-DD
-        if (first > 31) {
-          year = first;
-          month = second - 1;
-          day = third;
-        }
-        // DD/MM/YYYY
-        else if (second > 12) {
-          year = third;
-          month = second - 1;
-          day = first;
-        }
-        // MM/DD/YYYY
-        else {
-          // Try both: assume MM/DD/YYYY first
-          const date1 = new Date(Date.UTC(third, first - 1, second));
-          if (!isNaN(date1.getTime())) {
-            return Math.floor(date1.getTime() / 1000);
-          }
-          // Fallback to DD/MM/YYYY
-          const date2 = new Date(Date.UTC(third, second - 1, first));
-          if (!isNaN(date2.getTime())) {
-            return Math.floor(date2.getTime() / 1000);
-          }
-          return NaN;
-        }
+        month = parseInt(p2, 10) - 1;
+        day = parseInt(p3, 10);
+      } else if (year === parseInt(p3, 10)) {
+        // DD/MM/YYYY or MM/DD/YYYY – try both
+        // First try DD/MM/YYYY
+        month = parseInt(p2, 10) - 1;
+        day = parseInt(p1, 10);
+        let d = new Date(Date.UTC(year, month, day));
+        if (!isNaN(d.getTime())) return Math.floor(d.getTime() / 1000);
+        // Then try MM/DD/YYYY
+        month = parseInt(p1, 10) - 1;
+        day = parseInt(p2, 10);
+        d = new Date(Date.UTC(year, month, day));
+        if (!isNaN(d.getTime())) return Math.floor(d.getTime() / 1000);
       }
-
       if (year && month !== undefined && day) {
-        const utcDate = new Date(Date.UTC(year, month, day));
-        if (!isNaN(utcDate.getTime())) {
-          return Math.floor(utcDate.getTime() / 1000);
-        }
+        const d = new Date(Date.UTC(year, month, day));
+        if (!isNaN(d.getTime())) return Math.floor(d.getTime() / 1000);
       }
     }
 
-    // Last resort: native Date (may still fail in Safari, but we tried)
-    const nativeDate = new Date(str);
-    if (!isNaN(nativeDate.getTime())) {
-      return Math.floor(nativeDate.getTime() / 1000);
+    // Last resort: try original string after replacing 'T' back to space?
+    const lastTry = new Date(str);
+    if (!isNaN(lastTry.getTime())) {
+      return Math.floor(lastTry.getTime() / 1000);
     }
 
-    console.warn(`[FileUpload] Cannot parse date: "${str}"`);
+    console.warn(`[FileUpload] Cannot parse date: "${dateValue}"`);
     return NaN;
   }
 
@@ -114,14 +106,19 @@ export class FileUploadService {
    * Convert raw rows (from CSV/Excel/JSON) into ChartDataPoint[]
    */
   private normalizeChartData(rawData: any[]): ChartDataPoint[] {
-    if (!rawData || rawData.length === 0) return [];
+    if (!rawData || rawData.length === 0) {
+      console.warn('[FileUpload] normalizeChartData: empty rawData');
+      return [];
+    }
 
     const result: ChartDataPoint[] = [];
     let startIndex = 0;
 
-    // Detect header row
+    // Detect header row: if first row contains any non-numeric strings resembling date/price headers
     const firstRow = rawData[0];
     let headers: string[] = [];
+    let isFirstRowHeader = false;
+
     if (firstRow && Array.isArray(firstRow)) {
       const hasDateHeader = firstRow.some(cell =>
         typeof cell === 'string' && /date|time|datetime/i.test(cell)
@@ -129,12 +126,18 @@ export class FileUploadService {
       if (hasDateHeader) {
         startIndex = 1;
         headers = firstRow.map((h: any) => String(h).toLowerCase());
+        isFirstRowHeader = true;
       }
     }
 
+    console.log(`[FileUpload] Detected header: ${isFirstRowHeader}, startIndex=${startIndex}, rows total=${rawData.length}`);
+
     for (let i = startIndex; i < rawData.length; i++) {
       const row = rawData[i];
-      if (!row || row.length < 5) continue;
+      if (!row || !Array.isArray(row) || row.length < 5) {
+        console.debug(`[FileUpload] Skipping row ${i}: not enough columns`, row);
+        continue;
+      }
 
       // Map column indexes using headers if available
       let dateIdx = 0, openIdx = 1, highIdx = 2, lowIdx = 3, closeIdx = 4, volumeIdx = -1;
@@ -152,14 +155,21 @@ export class FileUploadService {
         if (closeIdx === -1) closeIdx = 4;
       }
 
-      const timestamp = this.parseDateToTimestamp(row[dateIdx]);
-      if (isNaN(timestamp)) continue;
+      const rawDate = row[dateIdx];
+      const timestamp = this.parseDateToTimestamp(rawDate);
+      if (isNaN(timestamp)) {
+        console.debug(`[FileUpload] Row ${i}: invalid date`, rawDate);
+        continue;
+      }
 
       const open = parseFloat(row[openIdx]);
       const high = parseFloat(row[highIdx]);
       const low = parseFloat(row[lowIdx]);
       const close = parseFloat(row[closeIdx]);
-      if (isNaN(open) || isNaN(high) || isNaN(low) || isNaN(close)) continue;
+      if (isNaN(open) || isNaN(high) || isNaN(low) || isNaN(close)) {
+        console.debug(`[FileUpload] Row ${i}: invalid OHLC`, { open, high, low, close });
+        continue;
+      }
 
       const volume = volumeIdx >= 0 ? parseFloat(row[volumeIdx]) : 0;
 
@@ -172,18 +182,24 @@ export class FileUploadService {
 
     // Sort by time ascending
     result.sort((a, b) => a.time - b.time);
-    console.log(`[FileUpload] Normalized ${result.length} candles. First: ${result[0]?.time}`);
+    console.log(`[FileUpload] Normalized ${result.length} candles. First time: ${result[0]?.time}, Last time: ${result[result.length-1]?.time}`);
     return result;
   }
 
   // ========== PUBLIC METHODS ==========
-
   async parseFile(file: File): Promise<ChartDataPoint[]> {
     const ext = file.name.split('.').pop()?.toLowerCase();
-    if (ext === 'csv') return this.parseCSV(file);
-    if (ext === 'xlsx' || ext === 'xls') return this.parseExcel(file);
-    if (ext === 'json') return this.parseJSON(file);
-    throw new Error('Unsupported file format');
+    console.log(`[FileUpload] Parsing ${file.name}, extension=${ext}`);
+    let parsed: ChartDataPoint[] = [];
+    if (ext === 'csv') parsed = await this.parseCSV(file);
+    else if (ext === 'xlsx' || ext === 'xls') parsed = await this.parseExcel(file);
+    else if (ext === 'json') parsed = await this.parseJSON(file);
+    else throw new Error('Unsupported file format');
+
+    if (parsed.length === 0) {
+      console.error('[FileUpload] No valid candles extracted. Check file format and date columns.');
+    }
+    return parsed;
   }
 
   private parseCSV(file: File): Promise<ChartDataPoint[]> {
@@ -230,7 +246,7 @@ export class FileUploadService {
           if (Array.isArray(json)) {
             dataArray = json;
           } else {
-            // Assume Alpha Vantage format
+            // Assume Alpha Vantage or similar format
             for (const key in json) {
               const item = json[key];
               dataArray.push({

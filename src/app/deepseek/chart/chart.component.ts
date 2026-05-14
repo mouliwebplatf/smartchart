@@ -777,21 +777,25 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
       });
   }
 
-  private applyChartData(): void {
-    if (!this.candlestickSeries || !this.chartData.length) return;
-    this.candlestickSeries.setData(
-      this.chartData.map(d => ({
-        time: d.time as Time,
-        open: d.open,
-        high: d.high,
-        low: d.low,
-        close: d.close,
-        volume: d.volume
-      }))
-    );
-    this.chart!.timeScale().fitContent();
-    this.renderAllLines();
+ private applyChartData(): void {
+  if (!this.candlestickSeries) return;
+  if (!this.chartData.length) {
+    console.warn('[Chart] No chart data – using mock data');
+    this.chartData = this.generateMockData();
   }
+  this.candlestickSeries.setData(
+    this.chartData.map(d => ({
+      time: d.time as Time,
+      open: d.open,
+      high: d.high,
+      low: d.low,
+      close: d.close,
+      volume: d.volume
+    }))
+  );
+  this.chart!.timeScale().fitContent();
+  this.renderAllLines();
+}
 
   private generateMockData(): ChartDataPoint[] {
     const data: ChartDataPoint[] = [];
