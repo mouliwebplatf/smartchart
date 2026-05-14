@@ -286,7 +286,15 @@
   &.error   { background: rgba(239,64,60,.18); border: 1px solid #EF403C; color: #ff6b68; }
   &.info    { background: rgba(78,205,196,.12); border: 1px solid var(--accent); color: var(--accent); }
 }
+.validation-message {
+  -webkit-backdrop-filter: blur(8px);  // ADD
+  backdrop-filter: blur(8px);
+}
 
+.extend-overlay {
+  -webkit-backdrop-filter: blur(4px);  // ADD
+  backdrop-filter: blur(4px);
+}
 // ── Drawing / status badges ─────────────────────────────────────────────────
 .drawing-badge {
   position: absolute;

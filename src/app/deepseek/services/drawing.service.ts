@@ -1,9 +1,8 @@
-// drawing.service.ts (UPDATED with Line Width Tolerance + Hint Blink Support)
-
+// drawing.service.ts
 import { Injectable } from '@angular/core';
 import { Observable, of } from 'rxjs';
 import { v4 as uuidv4 } from 'uuid';
-import { DrawingLine, ValidationResult } from '../models/drawing.model';
+import { DrawingLine, LineTool, ValidationResult } from '../models/drawing.model';
 
 @Injectable({ providedIn: 'root' })
 export class DrawingService {
@@ -11,17 +10,15 @@ export class DrawingService {
   private userLines    = new Map<number, DrawingLine[]>();
   private matchedLines = new Map<number, Set<string>>();
 
-  // Configuration for validation tolerance
-  private readonly DEFAULT_PRICE_TOLERANCE_PERCENT = 0.05; // 5% price tolerance
-  private readonly DEFAULT_SLOPE_TOLERANCE = 0.15;         // 15% slope tolerance
-  private readonly SAMPLE_POINTS = 10;                     // Points to sample for distance calculation
-private readonly EXACT_TIME_TOLERANCE_SEC = 1;     // 1 second
-  private readonly EXACT_PRICE_TOLERANCE    = 0.01; 
+  // Tolerance for exact matching (users must draw precisely)
+  private readonly EXACT_TIME_TOLERANCE_SEC = 1;     // 1 second
+  private readonly EXACT_PRICE_TOLERANCE    = 0.01; // 0.01 price units
+
   constructor() {
     this.loadFromLocalStorage();
   }
 
-  // ═══════════════════════════ ADMIN ═══════════════════════════
+  // ═══════════════════════════ ADMIN LINES ═══════════════════════════
 
   getAdminLines(testId: number): Observable<DrawingLine[]> {
     return of([...(this.adminLines.get(testId) ?? [])]);
@@ -33,6 +30,7 @@ private readonly EXACT_TIME_TOLERANCE_SEC = 1;     // 1 second
       lines.push({ ...line });
     }
     this.adminLines.set(testId, lines);
+    this.persist();
     return of({ ...line });
   }
 
@@ -50,8 +48,9 @@ private readonly EXACT_TIME_TOLERANCE_SEC = 1;     // 1 second
     const lines = this.adminLines.get(testId) ?? [];
     const idx   = lines.findIndex(l => l.id === lineId);
     if (idx !== -1) {
-      lines[idx] = { ...lines[idx], ...updates };
+      lines[idx] = { ...lines[idx], ...updates, updatedAt: new Date() };
       this.adminLines.set(testId, lines);
+      this.persist();
     }
     return of([...lines]);
   }
@@ -59,6 +58,7 @@ private readonly EXACT_TIME_TOLERANCE_SEC = 1;     // 1 second
   deleteAdminLine(testId: number, lineId: string): Observable<DrawingLine[]> {
     const filtered = (this.adminLines.get(testId) ?? []).filter(l => l.id !== lineId);
     this.adminLines.set(testId, filtered);
+    this.persist();
     return of([...filtered]);
   }
 
@@ -77,7 +77,7 @@ private readonly EXACT_TIME_TOLERANCE_SEC = 1;     // 1 second
     this.adminLines.set(testId, []);
   }
 
-  // ═══════════════════════════ USER ════════════════════════════
+  // ═══════════════════════════ USER LINES ════════════════════════════
 
   getUserLines(testId: number): Observable<DrawingLine[]> {
     return of([...(this.userLines.get(testId) ?? [])]);
@@ -85,7 +85,10 @@ private readonly EXACT_TIME_TOLERANCE_SEC = 1;     // 1 second
 
   saveUserLine(testId: number, line: DrawingLine): Observable<DrawingLine> {
     const lines = this.userLines.get(testId) ?? [];
-    if (!lines.find(l => l.id === line.id)) {
+    const existingIdx = lines.findIndex(l => l.id === line.id);
+    if (existingIdx !== -1) {
+      lines[existingIdx] = { ...line, updatedAt: new Date() };
+    } else {
       lines.push({ ...line });
     }
     this.userLines.set(testId, lines);
@@ -109,36 +112,37 @@ private readonly EXACT_TIME_TOLERANCE_SEC = 1;     // 1 second
   deleteUserLine(testId: number, lineId: string): Observable<DrawingLine[]> {
     const filtered = (this.userLines.get(testId) ?? []).filter(l => l.id !== lineId);
     this.userLines.set(testId, filtered);
+    // Also remove from matchedLines if it was matched? No, matchedLines tracks admin lines only.
     return of([...filtered]);
   }
 
   clearAllUserLines(testId: number): Observable<void> {
     this.userLines.set(testId, []);
     this.matchedLines.set(testId, new Set());
-    console.log(`[Store] clearAllUserLines | testId=${testId}`);
+    console.log(`[DrawingService] clearAllUserLines | testId=${testId}`);
     return of(void 0);
   }
 
   resetUserLines(testId: number): Observable<void>     { return this.clearAllUserLines(testId); }
   deleteAllUserLines(testId: number): Observable<void> { return this.clearAllUserLines(testId); }
 
-  // ═══════════════════════════ SAVE ALL (role-aware) ════════════
+  // ═══════════════════════════ SAVE ALL (role-aware) ═══════════════════
 
   saveAllLines(testId: number, role: 'admin' | 'user'): Observable<DrawingLine[]> {
     if (role === 'admin') {
       const lines = [...(this.adminLines.get(testId) ?? [])];
       this.adminLines.set(testId, lines);
       this.persist();
-      console.log(`[Store] saveAllLines admin | testId=${testId} | count=${lines.length}`);
+      console.log(`[DrawingService] saveAllLines admin | testId=${testId} | count=${lines.length}`);
       return of(lines);
     } else {
       const lines = [...(this.userLines.get(testId) ?? [])];
-      console.log(`[Store] saveAllLines user | testId=${testId} | count=${lines.length}`);
+      console.log(`[DrawingService] saveAllLines user | testId=${testId} | count=${lines.length}`);
       return of(lines);
     }
   }
 
-  // ═══════════════════════════ DUPLICATE ═══════════════════════
+  // ═══════════════════════════ DUPLICATE ═══════════════════════════
 
   duplicateLine(
     testId: number,
@@ -164,6 +168,7 @@ private readonly EXACT_TIME_TOLERANCE_SEC = 1;     // 1 second
     const lines = this.adminLines.get(testId) ?? [];
     lines.push(dup);
     this.adminLines.set(testId, lines);
+    this.persist();
 
     return of({ ...dup });
   }
@@ -173,7 +178,7 @@ private readonly EXACT_TIME_TOLERANCE_SEC = 1;     // 1 second
     return colors[count % colors.length];
   }
 
-  // ═══════════════════════════ MATCHED LINES TRACKING ══════════
+  // ═══════════════════════════ MATCHED LINES TRACKING ═══════════════
 
   getMatchedLines(testId: number): Set<string> {
     return this.matchedLines.get(testId) ?? new Set();
@@ -182,24 +187,21 @@ private readonly EXACT_TIME_TOLERANCE_SEC = 1;     // 1 second
   getMatchedAdminLines(testId: number): DrawingLine[] {
     const allAdminLines = this.adminLines.get(testId) ?? [];
     const matchedIds = this.matchedLines.get(testId) ?? new Set();
-    return allAdminLines.filter(line => !matchedIds.has(line.id));
+    return allAdminLines.filter(line => matchedIds.has(line.id));
   }
 
   clearMatchedLines(testId: number): void {
     this.matchedLines.set(testId, new Set());
   }
 
-  // ═══════════════════════════ VALIDATION WITH WIDTH TOLERANCE ══════════════════════
+  // ═══════════════════════════ VALIDATION (EXACT MATCHING) ══════════════════════
 
   /**
    * Validates a user-drawn line against remaining unmatched admin reference lines.
-   *
-   * Includes line width tolerance - users can draw lines that are close to
-   * the admin line within a tolerance band (5% of price range by default).
-   *
-   * Returns a ValidationResult with details about the match.
+   * Uses exact time/price tolerances (strict matching).
+   * Returns a ValidationResult with details.
    */
-validateUserLine(testId: number, userLine: DrawingLine): ValidationResult {
+  validateUserLine(testId: number, userLine: DrawingLine): ValidationResult {
     const adminLines = this.adminLines.get(testId) ?? [];
     if (adminLines.length === 0) {
       return {
@@ -254,7 +256,7 @@ validateUserLine(testId: number, userLine: DrawingLine): ValidationResult {
     // No exact match found
     return {
       isValid: false,
-      score: 1.0,           // not used for exact matching, but kept for compatibility
+      score: 1.0,
       isWithinTolerance: false,
       correctLine: undefined,
       remainingCount: remaining.length,
@@ -262,35 +264,36 @@ validateUserLine(testId: number, userLine: DrawingLine): ValidationResult {
     };
   }
 
-   private isExactMatch(user: DrawingLine, admin: DrawingLine): boolean {
-    // Tool type must be the same (or compatible if needed)
+  /**
+   * Checks if a user line exactly matches an admin line within tolerances.
+   */
+  private isExactMatch(user: DrawingLine, admin: DrawingLine): boolean {
     if (user.tool !== admin.tool) return false;
 
-    // For horizontal line: only start price and end price matter (times are irrelevant)
+    // Horizontal line: only prices matter (times are ignored)
     if (user.tool === 'hline') {
       return Math.abs(user.startPrice - admin.startPrice) <= this.EXACT_PRICE_TOLERANCE
           && Math.abs(user.endPrice   - admin.endPrice)   <= this.EXACT_PRICE_TOLERANCE;
     }
 
-    // For vertical line: only start time and end time matter
+    // Vertical line: only times matter
     if (user.tool === 'vline') {
       return Math.abs(user.startTime - admin.startTime) <= this.EXACT_TIME_TOLERANCE_SEC
           && Math.abs(user.endTime   - admin.endTime)   <= this.EXACT_TIME_TOLERANCE_SEC;
     }
 
-    // For ray: check start point and slope (end point is ignored because ray extends infinitely)
+    // Ray: start point and slope must match
     if (user.tool === 'ray') {
       const startTimeMatch  = Math.abs(user.startTime - admin.startTime) <= this.EXACT_TIME_TOLERANCE_SEC;
       const startPriceMatch = Math.abs(user.startPrice - admin.startPrice) <= this.EXACT_PRICE_TOLERANCE;
       if (!startTimeMatch || !startPriceMatch) return false;
 
-      // Slope must match (direction)
       const userSlope  = this.calcSlope(user);
       const adminSlope = this.calcSlope(admin);
       return Math.abs(userSlope - adminSlope) <= 0.0001; // very small slope tolerance
     }
 
-    // For trendline and straightline: both endpoints must match
+    // Trendline and straightline: both endpoints must match
     const startTimeMatch  = Math.abs(user.startTime - admin.startTime) <= this.EXACT_TIME_TOLERANCE_SEC;
     const endTimeMatch    = Math.abs(user.endTime   - admin.endTime)   <= this.EXACT_TIME_TOLERANCE_SEC;
     const startPriceMatch = Math.abs(user.startPrice - admin.startPrice) <= this.EXACT_PRICE_TOLERANCE;
@@ -305,103 +308,32 @@ validateUserLine(testId: number, userLine: DrawingLine): ValidationResult {
     return (line.endPrice - line.startPrice) / dt;
   }
 
-  /**
-   * Calculate similarity score between user line and admin line with tolerance.
-   * Lower score is better. Score < 1.0 means within tolerance.
-   */
-  private calculateSimilarityWithTolerance(
-    user: DrawingLine,
-    admin: DrawingLine,
-    tolerancePrice: number
-  ): number {
-    const overlapStart = Math.max(user.startTime, admin.startTime);
-    const overlapEnd   = Math.min(user.endTime,   admin.endTime);
-
-    if (overlapEnd <= overlapStart) return 2.0;
-
-    const userTimeRange  = Math.max(user.endTime  - user.startTime,  1);
-    const adminTimeRange = Math.max(admin.endTime - admin.startTime, 1);
-
-    const userSlope  = (user.endPrice  - user.startPrice)  / userTimeRange;
-    const adminSlope = (admin.endPrice - admin.startPrice) / adminTimeRange;
-
-    const userIntercept  = user.startPrice  - userSlope  * user.startTime;
-    const adminIntercept = admin.startPrice - adminSlope * admin.startTime;
-
-    let totalDeviation = 0;
-    let maxDeviation   = 0;
-    let slopeDeviationSum = 0;
-
-    for (let i = 0; i <= this.SAMPLE_POINTS; i++) {
-      const t          = overlapStart + (overlapEnd - overlapStart) * (i / this.SAMPLE_POINTS);
-      const userPrice  = userSlope  * t + userIntercept;
-      const adminPrice = adminSlope * t + adminIntercept;
-      const deviation  = Math.abs(userPrice - adminPrice);
-
-      totalDeviation += deviation;
-      maxDeviation    = Math.max(maxDeviation, deviation);
-
-      if (i === 0 || i === this.SAMPLE_POINTS) {
-        slopeDeviationSum += Math.abs(userSlope - adminSlope);
-      }
-    }
-
-    const avgDeviation     = totalDeviation / (this.SAMPLE_POINTS + 1);
-    const avgSlopeDeviation = slopeDeviationSum / 2;
-
-    const deviationScore = avgDeviation / tolerancePrice;
-    const slopeScore     = avgSlopeDeviation / (Math.abs(adminSlope) * this.DEFAULT_SLOPE_TOLERANCE + 0.01);
-
-    // Weight: 70% deviation, 30% slope
-    return (deviationScore * 0.7) + (Math.min(slopeScore, 1.0) * 0.3);
-  }
+  // ═══════════════════════════ HINT BLINK SUPPORT ══════════════════════════════
 
   /**
-   * Calculate the average distance between user line and admin line across sample points.
+   * Returns all unmatched admin lines whose time range overlaps the user's
+   * current preview line time range.
+   *
+   * Called on every crosshair move while the user is drawing.
+   * Once an admin line is matched (correct answer drawn), it is automatically excluded.
    */
-  private calculateAverageDistance(
-    user: DrawingLine,
-    admin: DrawingLine,
-    tolerancePrice: number
-  ): number {
-    const overlapStart = Math.max(user.startTime, admin.startTime);
-    const overlapEnd   = Math.min(user.endTime,   admin.endTime);
+  getUnmatchedAdminLinesInTimeRange(
+    testId: number,
+    previewStartTime: number,
+    previewEndTime: number
+  ): DrawingLine[] {
+    const adminLines = this.adminLines.get(testId) ?? [];
+    const matched    = this.matchedLines.get(testId) ?? new Set<string>();
 
-    if (overlapEnd <= overlapStart) return Infinity;
+    const pvMin = Math.min(previewStartTime, previewEndTime);
+    const pvMax = Math.max(previewStartTime, previewEndTime);
 
-    const userSlope  = (user.endPrice  - user.startPrice)  / Math.max(user.endTime  - user.startTime,  1);
-    const adminSlope = (admin.endPrice - admin.startPrice) / Math.max(admin.endTime - admin.startTime, 1);
-
-    const userIntercept  = user.startPrice  - userSlope  * user.startTime;
-    const adminIntercept = admin.startPrice - adminSlope * admin.startTime;
-
-    let totalDistance = 0;
-
-    for (let i = 0; i <= this.SAMPLE_POINTS; i++) {
-      const t          = overlapStart + (overlapEnd - overlapStart) * (i / this.SAMPLE_POINTS);
-      const userPrice  = userSlope  * t + userIntercept;
-      const adminPrice = adminSlope * t + adminIntercept;
-      totalDistance   += Math.abs(userPrice - adminPrice);
-    }
-
-    return totalDistance / (this.SAMPLE_POINTS + 1);
-  }
-
-  /**
-   * Calculate the price range across all admin lines for tolerance calculation.
-   */
-  private calculatePriceRange(adminLines: DrawingLine[]): number {
-    if (!adminLines.length) return 1000;
-
-    let minPrice =  Infinity;
-    let maxPrice = -Infinity;
-
-    for (const line of adminLines) {
-      minPrice = Math.min(minPrice, line.startPrice, line.endPrice);
-      maxPrice = Math.max(maxPrice, line.startPrice, line.endPrice);
-    }
-
-    return maxPrice - minPrice;
+    return adminLines.filter(al => {
+      if (matched.has(al.id)) return false;
+      const alMin = Math.min(al.startTime, al.endTime);
+      const alMax = Math.max(al.startTime, al.endTime);
+      return pvMax >= alMin && pvMin <= alMax;
+    });
   }
 
   /**
@@ -426,100 +358,28 @@ validateUserLine(testId: number, userLine: DrawingLine): ValidationResult {
     return null;
   }
 
-  // ═══════════════════════════ HINT BLINK SUPPORT ══════════════════════════════
-
-  /**
-   * Returns all unmatched admin lines whose time range overlaps the user's
-   * current preview line time range.
-   *
-   * Called on every crosshair move while the user is drawing.
-   * Once an admin line is matched (correct answer drawn), it is automatically
-   * excluded — its hint blink is permanently disabled with no extra handling needed.
-   *
-   * All three hint conditions collapse to a single time-range overlap check:
-   *   1. Price range overlaps admin line price band        → time overlap is enough
-   *   2. Time AND price both overlap admin line            → time overlap is enough
-   *   3. Endpoint above/below admin line in the same zone → time overlap is enough
-   */
-  getUnmatchedAdminLinesInTimeRange(
-    testId: number,
-    previewStartTime: number,
-    previewEndTime:   number
-  ): DrawingLine[] {
-    const adminLines = this.adminLines.get(testId) ?? [];
-    const matched    = this.matchedLines.get(testId) ?? new Set<string>();
-
-    const pvMin = Math.min(previewStartTime, previewEndTime);
-    const pvMax = Math.max(previewStartTime, previewEndTime);
-
-    return adminLines.filter(al => {
-      // Already correctly answered — never blink again
-      if (matched.has(al.id)) return false;
-
-      const alMin = Math.min(al.startTime, al.endTime);
-      const alMax = Math.max(al.startTime, al.endTime);
-
-      // Time ranges must overlap
-      return pvMax >= alMin && pvMin <= alMax;
-    });
-  }
-
   // ═══════════════════════════ REMAINING / STATUS HELPERS ══════════════════════
 
-  /**
-   * Get remaining unmatched admin lines for a test.
-   */
   getRemainingAdminLines(testId: number): DrawingLine[] {
     const allAdminLines = this.adminLines.get(testId) ?? [];
     const matchedIds    = this.matchedLines.get(testId) ?? new Set();
     return allAdminLines.filter(line => !matchedIds.has(line.id));
   }
 
-  /**
-   * Check if a specific admin line has been matched.
-   */
   isAdminLineMatched(testId: number, adminLineId: string): boolean {
     const matchedIds = this.matchedLines.get(testId) ?? new Set();
     return matchedIds.has(adminLineId);
   }
 
-  /**
-   * Get match count for a test.
-   */
   getMatchCount(testId: number): number {
     const matchedIds = this.matchedLines.get(testId) ?? new Set();
     return matchedIds.size;
   }
 
-  /**
-   * Check if test is complete (all admin lines matched).
-   */
   isTestComplete(testId: number): boolean {
     const allAdminLines = this.adminLines.get(testId) ?? [];
     const matchedIds    = this.matchedLines.get(testId) ?? new Set();
     return allAdminLines.length > 0 && matchedIds.size >= allAdminLines.length;
-  }
-
-  // ═══════════════════════════ PRIVATE HELPERS ═════════════════
-
-  private _similarity(a: DrawingLine, b: DrawingLine): number {
-    const slope = (l: DrawingLine) => {
-      const dx = l.endX - l.startX;
-      return dx === 0 ? Infinity : (l.endY - l.startY) / dx;
-    };
-    const s1 = slope(a), s2 = slope(b);
-    const slopeDiff =
-      s1 === Infinity && s2 === Infinity ? 0
-      : s1 === Infinity || s2 === Infinity ? 1
-      : Math.min(Math.abs(s1 - s2) / 10, 1);
-    const posDiff = Math.min(
-      Math.hypot(
-        (a.startX + a.endX) / 2 - (b.startX + b.endX) / 2,
-        (a.startY + a.endY) / 2 - (b.startY + b.endY) / 2,
-      ),
-      1,
-    );
-    return slopeDiff * 0.4 + posDiff * 0.6;
   }
 
   // ═══════════════════════════ PERSISTENCE ═════════════════════
@@ -533,7 +393,7 @@ validateUserLine(testId: number, userLine: DrawingLine): ValidationResult {
         })
       );
     } catch (e) {
-      console.warn('[Store] persist failed:', e);
+      console.warn('[DrawingService] persist failed:', e);
     }
   }
 
@@ -543,10 +403,10 @@ validateUserLine(testId: number, userLine: DrawingLine): ValidationResult {
       if (!raw) return;
 
       const { adminLines } = JSON.parse(raw);
-
       this.adminLines = new Map(
         (adminLines ?? []).map(([k, v]: [any, DrawingLine[]]) => [Number(k), v])
       );
+      // userLines and matchedLines are not persisted; they are session-only.
       this.userLines    = new Map();
       this.matchedLines = new Map();
     } catch {
