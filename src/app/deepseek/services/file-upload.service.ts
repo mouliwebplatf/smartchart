@@ -17,6 +17,12 @@ export class FileUploadService {
 
   /**
    * Universal date parser – works on Safari, Firefox, Chrome, Edge.
+   * Supports:
+   * - ISO 8601: "2024-01-15" or "2024-01-15T10:30:00Z"
+   * - "YYYY-MM-DD HH:MM:SS" (space replaced with T)
+   * - "DD/MM/YYYY", "MM/DD/YYYY", "DD-MM-YYYY", "MM-DD-YYYY"
+   * - Excel serial numbers (days since 1900)
+   * - Unix timestamps (seconds or milliseconds)
    */
   private parseDateToTimestamp(dateValue: any): number {
     if (dateValue == null || dateValue === '') return NaN;
@@ -29,7 +35,7 @@ export class FileUploadService {
         const seconds = (dateValue - excelEpoch) * 86400;
         return Math.floor(seconds);
       }
-      // Assume it's already a Unix timestamp (seconds or milliseconds)
+      // Unix timestamp (seconds or milliseconds)
       if (dateValue > 1e11) return Math.floor(dateValue / 1000);
       if (dateValue > 1e9) return dateValue;
       return NaN;
@@ -38,7 +44,7 @@ export class FileUploadService {
     let str = String(dateValue).trim();
     if (str === '') return NaN;
 
-    // Try as integer (maybe Excel serial)
+    // Try as integer (Excel serial as string)
     const asNumber = Number(str);
     if (!isNaN(asNumber) && asNumber > 0 && asNumber < 100000 && !str.includes('.')) {
       const excelEpoch = 25569;
@@ -66,16 +72,10 @@ export class FileUploadService {
 
     if (separator) {
       const [p1, p2, p3] = str.split(separator);
-      const year = p3 && p3.length === 4 ? parseInt(p3, 10) : (p1.length === 4 ? parseInt(p1, 10) : 0);
-      let month = 0, day = 0;
-
-      if (year === parseInt(p1, 10)) {
-        // YYYY-MM-DD
-        month = parseInt(p2, 10) - 1;
-        day = parseInt(p3, 10);
-      } else if (year === parseInt(p3, 10)) {
-        // DD/MM/YYYY or MM/DD/YYYY – try both
-        // First try DD/MM/YYYY
+      let year = 0, month = 0, day = 0;
+      if (p3 && p3.length === 4) {
+        year = parseInt(p3, 10);
+        // Try DD/MM/YYYY first
         month = parseInt(p2, 10) - 1;
         day = parseInt(p1, 10);
         let d = new Date(Date.UTC(year, month, day));
@@ -85,14 +85,17 @@ export class FileUploadService {
         day = parseInt(p2, 10);
         d = new Date(Date.UTC(year, month, day));
         if (!isNaN(d.getTime())) return Math.floor(d.getTime() / 1000);
-      }
-      if (year && month !== undefined && day) {
+      } else if (p1 && p1.length === 4) {
+        // YYYY-MM-DD
+        year = parseInt(p1, 10);
+        month = parseInt(p2, 10) - 1;
+        day = parseInt(p3, 10);
         const d = new Date(Date.UTC(year, month, day));
         if (!isNaN(d.getTime())) return Math.floor(d.getTime() / 1000);
       }
     }
 
-    // Last resort: try original string after replacing 'T' back to space?
+    // Last resort: try original string
     const lastTry = new Date(str);
     if (!isNaN(lastTry.getTime())) {
       return Math.floor(lastTry.getTime() / 1000);
@@ -103,9 +106,16 @@ export class FileUploadService {
   }
 
   /**
-   * Convert raw rows (from CSV/Excel/JSON) into ChartDataPoint[]
+   * Public method to normalize raw data (called from chart component)
    */
-  private normalizeChartData(rawData: any[]): ChartDataPoint[] {
+  public normalizeChartData(rawData: any[]): ChartDataPoint[] {
+    return this._normalizeChartData(rawData);
+  }
+
+  /**
+   * Private implementation – converts raw rows (from CSV/Excel/JSON) into ChartDataPoint[]
+   */
+  private _normalizeChartData(rawData: any[]): ChartDataPoint[] {
     if (!rawData || rawData.length === 0) {
       console.warn('[FileUpload] normalizeChartData: empty rawData');
       return [];
@@ -209,7 +219,7 @@ export class FileUploadService {
         skipEmptyLines: true,
         complete: (result) => {
           try {
-            const parsed = this.normalizeChartData(result.data as any[]);
+            const parsed = this._normalizeChartData(result.data as any[]);
             resolve(parsed);
           } catch (err) { reject(err); }
         },
@@ -227,7 +237,7 @@ export class FileUploadService {
           const workbook = XLSX.read(data, { type: 'array' });
           const sheet = workbook.Sheets[workbook.SheetNames[0]];
           const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: '' });
-          const parsed = this.normalizeChartData(rows as any[]);
+          const parsed = this._normalizeChartData(rows as any[]);
           resolve(parsed);
         } catch (err) { reject(err); }
       };
@@ -237,34 +247,66 @@ export class FileUploadService {
   }
 
   private parseJSON(file: File): Promise<ChartDataPoint[]> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = (e: any) => {
-        try {
-          const json = JSON.parse(e.target.result);
-          let dataArray: any[] = [];
-          if (Array.isArray(json)) {
-            dataArray = json;
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e: any) => {
+      try {
+        const json = JSON.parse(e.target.result);
+        let rowsArray: any[][] = [];
+
+        if (Array.isArray(json)) {
+          if (json.length === 0) {
+            resolve([]);
+            return;
+          }
+          // If the first element is an array, assume it's already in row format
+          if (Array.isArray(json[0])) {
+            rowsArray = json;
           } else {
-            // Assume Alpha Vantage or similar format
-            for (const key in json) {
-              const item = json[key];
-              dataArray.push({
-                time: key,
-                open: item['1. open'],
-                high: item['2. high'],
-                low: item['3. low'],
-                close: item['4. close'],
-                volume: item['5. volume'] || 0
-              });
+            // Convert array of objects to rows with header
+            const keys = Object.keys(json[0]);
+            rowsArray.push(keys); // header row
+            for (const obj of json) {
+              rowsArray.push(keys.map(k => obj[k]));
             }
           }
-          const parsed = this.normalizeChartData(dataArray);
-          resolve(parsed);
-        } catch (err) { reject(err); }
-      };
-      reader.onerror = () => reject(new Error('JSON read failed'));
-      reader.readAsText(file);
-    });
-  }
+        } else if (typeof json === 'object' && json !== null) {
+          // Alpha Vantage format: object with date keys
+          const dataArray: any[] = [];
+          for (const key in json) {
+            const item = json[key];
+            dataArray.push({
+              time: key,
+              open: item['1. open'],
+              high: item['2. high'],
+              low: item['3. low'],
+              close: item['4. close'],
+              volume: item['5. volume'] || 0
+            });
+          }
+          if (dataArray.length) {
+            const keys = ['time', 'open', 'high', 'low', 'close', 'volume'];
+            rowsArray.push(keys);
+            for (const obj of dataArray) {
+              rowsArray.push(keys.map(k => obj[k]));
+            }
+          }
+        }
+
+        if (rowsArray.length === 0) {
+          resolve([]);
+          return;
+        }
+
+        // Now rowsArray is an array of arrays with an optional header row
+        const parsed = this._normalizeChartData(rowsArray);
+        resolve(parsed);
+      } catch (err) {
+        reject(err);
+      }
+    };
+    reader.onerror = () => reject(new Error('JSON read failed'));
+    reader.readAsText(file);
+  });
+}
 }
