@@ -1,4 +1,4 @@
-// chart.component.ts (FIXED for cross-browser compatibility)
+// chart.component.ts (FIXED for cross-browser compatibility - no structuredClone)
 import {
   Component, ElementRef, ViewChild,
   AfterViewInit, OnDestroy,
@@ -70,7 +70,6 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   private extendingLineIdHandle: string | null = null;
   private handleCanvasContext: CanvasRenderingContext2D | null = null;
   private animationFrameId: number | null = null;
-  private originalLineState: DrawingLine | null = null;
   lastSavedTime: Date | null = null;
 
   private destroy$ = new Subject<void>();
@@ -935,9 +934,7 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
           handleScale:  { axisPressedMouseMove: false, mouseWheel: false, pinch: false },
         });
         this.extendingLineIdHandle = handle.lineId;
-        const selected = this.userLines.find(l => l.id === handle.lineId)
-          ?? this.adminLines.find(l => l.id === handle.lineId);
-        if (selected) this.originalLineState = structuredClone(selected);
+        // ✅ FIX 1: removed structuredClone (unused variable)
         if (handle.type === 'left') { this.isExtendingLeftHandle  = true; }
         else                        { this.isExtendingRightHandle = true; }
       });
@@ -967,7 +964,8 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
         : this.adminLines.find(l => l.id === hit.id);
       if (!selectedLine) return;
 
-      this.dragLineSnapshot = structuredClone(selectedLine);
+      // ✅ FIX 2: replace structuredClone with shallow spread (works in all browsers)
+      this.dragLineSnapshot = { ...selectedLine };
       const chartPoint = this.screenToChartPoint(sp);
       if (chartPoint) this.dragStartPoint = { time: chartPoint.time, price: chartPoint.price };
 
