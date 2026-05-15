@@ -3,17 +3,6 @@
 
   <!-- ══════════════ HEADER ══════════════ -->
   <div class="chart-header">
-    <!-- <div class="duration-filter">
-      <label>Show last</label>
-      <input type="number" [(ngModel)]="durationValue" (change)="onDurationChange()" min="1">
-      <select [(ngModel)]="durationType" (change)="onDurationChange()">
-        <option value="day">Day(s)</option>
-        <option value="month">Month(s)</option>
-        <option value="year">Year(s)</option>
-      </select>
-    </div> -->
-
-    <!-- <h2>{{ testName }}</h2> -->
 
     <div class="header-controls">
       <button class="btn-theme" (click)="toggleTheme()" title="Toggle Theme">
@@ -58,11 +47,10 @@
           <span>Line</span>
         </button>
 
-        <!-- ── Straight Line (new) ── -->
+        <!-- Straight Line -->
         <button class="tool-btn" [class.active]="activeTool === 'straightline'"
                 (click)="setActiveTool('straightline')"
                 title="Straight Horizontal Line — single click, spans full width (H)">
-          <!-- Icon: a perfectly horizontal line with tiny end-caps -->
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="2"  y1="12" x2="22" y2="12"/>
             <line x1="2"  y1="9"  x2="2"  y2="15"/>
@@ -153,7 +141,7 @@
         </button>
       </div>
 
-      <!-- ── Selection info panel ── -->
+      <!-- Selection info panel -->
       <div class="selection-info" *ngIf="selectedLineId && activeTool === 'select'">
         <div class="info-title">Selected Line</div>
         <div class="info-row">
@@ -174,7 +162,7 @@
         </div>
       </div>
 
-      <!-- ── Straight-line hint panel ── -->
+      <!-- Straight-line hint panel -->
       <div class="selection-info straightline-hint"
            *ngIf="activeTool === 'straightline'">
         <div class="info-title">Straight Line</div>
@@ -218,10 +206,25 @@
            [class.cursor-crosshair]="activeTool !== 'select'"
            [class.cursor-pointer]="activeTool === 'select'"></div>
 
-      <!-- Handle overlay canvas for drag handles -->
-      <canvas #handleCanvas class="handle-canvas"
-        [style.pointer-events]="activeTool === 'select' && cursorIsOverInteractable ? 'auto' : 'none'">
-      </canvas>
+      <!--
+        Handle overlay canvas.
+
+        IMPORTANT — pointer-events is set statically to 'none' here.
+        The TypeScript sets canvas.style.cursor directly in onCrosshairMove()
+        to give hover feedback without going through Angular's binding system.
+
+        DO NOT restore [style.pointer-events]="... cursorIsOverInteractable ..."
+        here — that binding is what caused NG0100. Writing cursorIsOverInteractable
+        from a Lightweight Charts crosshair-move callback (which fires synchronously
+        during Angular's first change-detection pass on component activation) trips
+        the ExpressionChangedAfterItHasBeenCheckedError every time.
+
+        The canvas does not need to receive pointer events because all mouse
+        interaction (drag, click, hit-test) is handled by the @HostListener
+        listeners on `document` in the component class, which correctly read
+        coordinates relative to the chart container's bounding rect.
+      -->
+      <canvas #handleCanvas class="handle-canvas"></canvas>
     </div>
   </div>
 
@@ -284,21 +287,6 @@
     </div>
   </div>
 
-  <!-- ══════════════ INSTRUCTIONS ══════════════ -->
-  <!-- <div class="instructions">
-    <h3>📐 Drawing Guide</h3>
-    <ul>
-      <li><strong>Draw Line:</strong> Select Line tool → click start point → click end point</li>
-      <li><strong>Straight Line:</strong> Select Straight tool (<kbd>H</kbd>) → single click → full-width horizontal line placed instantly</li>
-      <li><strong>Select / Move:</strong> Select tool → click a line to select → drag body to translate</li>
-      <li><strong>Extend / Shrink:</strong> Select a line → drag the <strong>◀ ▶ handles</strong> at each end</li>
-      <li><strong>Duplicate:</strong> Select a line → <kbd>Ctrl+D</kbd> or click Duplicate button</li>
-      <li><strong>Delete:</strong> Select a line → <kbd>Del</kbd> or click Delete button</li>
-      <li><strong>Reset All:</strong> <kbd>Ctrl+R</kbd> to clear all lines</li>
-      <li *ngIf="userRole === 'admin'"><strong>Admin:</strong> Draw lines then click "Save" to set correct answers</li>
-      <li *ngIf="userRole !== 'admin'"><strong>User:</strong> Draw lines to practise — validation is instant</li>
-    </ul>
-  </div> -->
 </div>
 
 <!-- Progress badge -->

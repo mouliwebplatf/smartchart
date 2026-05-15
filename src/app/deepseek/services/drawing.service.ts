@@ -77,6 +77,21 @@ export class DrawingService {
     this.adminLines.set(testId, []);
   }
 
+  // ── NEW: required by chart.component when hydrating from an external source ──
+  /**
+   * Registers admin lines into memory for a given testId without any HTTP call
+   * and without persisting to localStorage.
+   *
+   * In practice this is rarely needed — loadFromLocalStorage() already populates
+   * this.adminLines on service construction from the 'drawing_data' key.
+   * This method exists as a safety escape hatch (e.g. when another storage key
+   * or API response needs to be injected without overwriting persisted data).
+   */
+  setAdminLinesInMemory(testId: number, lines: DrawingLine[]): void {
+    this.adminLines.set(testId, lines.map(l => ({ ...l })));
+  }
+  // ─────────────────────────────────────────────────────────────────────────────
+
   // ═══════════════════════════ USER LINES ════════════════════════════
 
   getUserLines(testId: number): Observable<DrawingLine[]> {
@@ -112,7 +127,6 @@ export class DrawingService {
   deleteUserLine(testId: number, lineId: string): Observable<DrawingLine[]> {
     const filtered = (this.userLines.get(testId) ?? []).filter(l => l.id !== lineId);
     this.userLines.set(testId, filtered);
-    // Also remove from matchedLines if it was matched? No, matchedLines tracks admin lines only.
     return of([...filtered]);
   }
 
@@ -196,11 +210,6 @@ export class DrawingService {
 
   // ═══════════════════════════ VALIDATION (EXACT MATCHING) ══════════════════════
 
-  /**
-   * Validates a user-drawn line against remaining unmatched admin reference lines.
-   * Uses exact time/price tolerances (strict matching).
-   * Returns a ValidationResult with details.
-   */
   validateUserLine(testId: number, userLine: DrawingLine): ValidationResult {
     const adminLines = this.adminLines.get(testId) ?? [];
     if (adminLines.length === 0) {
@@ -226,7 +235,6 @@ export class DrawingService {
       };
     }
 
-    // Find an exact match among remaining admin lines
     let matchedAdminLine: DrawingLine | null = null;
     for (const al of remaining) {
       if (this.isExactMatch(userLine, al)) {
@@ -253,7 +261,6 @@ export class DrawingService {
       };
     }
 
-    // No exact match found
     return {
       isValid: false,
       score: 1.0,
@@ -264,42 +271,30 @@ export class DrawingService {
     };
   }
 
-  /**
-   * Checks if a user line exactly matches an admin line within tolerances.
-   */
   private isExactMatch(user: DrawingLine, admin: DrawingLine): boolean {
     if (user.tool !== admin.tool) return false;
 
-    // Horizontal line: only prices matter (times are ignored)
     if (user.tool === 'hline') {
       return Math.abs(user.startPrice - admin.startPrice) <= this.EXACT_PRICE_TOLERANCE
           && Math.abs(user.endPrice   - admin.endPrice)   <= this.EXACT_PRICE_TOLERANCE;
     }
 
-    // Vertical line: only times matter
     if (user.tool === 'vline') {
       return Math.abs(user.startTime - admin.startTime) <= this.EXACT_TIME_TOLERANCE_SEC
           && Math.abs(user.endTime   - admin.endTime)   <= this.EXACT_TIME_TOLERANCE_SEC;
     }
 
-    // Ray: start point and slope must match
     if (user.tool === 'ray') {
-      const startTimeMatch  = Math.abs(user.startTime - admin.startTime) <= this.EXACT_TIME_TOLERANCE_SEC;
+      const startTimeMatch  = Math.abs(user.startTime  - admin.startTime)  <= this.EXACT_TIME_TOLERANCE_SEC;
       const startPriceMatch = Math.abs(user.startPrice - admin.startPrice) <= this.EXACT_PRICE_TOLERANCE;
       if (!startTimeMatch || !startPriceMatch) return false;
-
-      const userSlope  = this.calcSlope(user);
-      const adminSlope = this.calcSlope(admin);
-      return Math.abs(userSlope - adminSlope) <= 0.0001; // very small slope tolerance
+      return Math.abs(this.calcSlope(user) - this.calcSlope(admin)) <= 0.0001;
     }
 
-    // Trendline and straightline: both endpoints must match
-    const startTimeMatch  = Math.abs(user.startTime - admin.startTime) <= this.EXACT_TIME_TOLERANCE_SEC;
-    const endTimeMatch    = Math.abs(user.endTime   - admin.endTime)   <= this.EXACT_TIME_TOLERANCE_SEC;
-    const startPriceMatch = Math.abs(user.startPrice - admin.startPrice) <= this.EXACT_PRICE_TOLERANCE;
-    const endPriceMatch   = Math.abs(user.endPrice   - admin.endPrice)   <= this.EXACT_PRICE_TOLERANCE;
-
-    return startTimeMatch && endTimeMatch && startPriceMatch && endPriceMatch;
+    return Math.abs(user.startTime  - admin.startTime)  <= this.EXACT_TIME_TOLERANCE_SEC
+        && Math.abs(user.endTime    - admin.endTime)     <= this.EXACT_TIME_TOLERANCE_SEC
+        && Math.abs(user.startPrice - admin.startPrice)  <= this.EXACT_PRICE_TOLERANCE
+        && Math.abs(user.endPrice   - admin.endPrice)    <= this.EXACT_PRICE_TOLERANCE;
   }
 
   private calcSlope(line: DrawingLine): number {
@@ -310,13 +305,6 @@ export class DrawingService {
 
   // ═══════════════════════════ HINT BLINK SUPPORT ══════════════════════════════
 
-  /**
-   * Returns all unmatched admin lines whose time range overlaps the user's
-   * current preview line time range.
-   *
-   * Called on every crosshair move while the user is drawing.
-   * Once an admin line is matched (correct answer drawn), it is automatically excluded.
-   */
   getUnmatchedAdminLinesInTimeRange(
     testId: number,
     previewStartTime: number,
@@ -336,11 +324,6 @@ export class DrawingService {
     });
   }
 
-  /**
-   * Returns the first admin line whose time range overlaps the user line's time range
-   * (within a 2-day tolerance on each side). Used to flash a hint when the user draws
-   * in the right zone but with the wrong slope/price.
-   */
   findAdminLineContainingTimeRange(
     testId: number,
     userLine: DrawingLine
@@ -406,7 +389,7 @@ export class DrawingService {
       this.adminLines = new Map(
         (adminLines ?? []).map(([k, v]: [any, DrawingLine[]]) => [Number(k), v])
       );
-      // userLines and matchedLines are not persisted; they are session-only.
+      // userLines and matchedLines are session-only — not persisted.
       this.userLines    = new Map();
       this.matchedLines = new Map();
     } catch {
