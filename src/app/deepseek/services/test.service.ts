@@ -11,68 +11,7 @@ export class TestService {
   private testsSubject: BehaviorSubject<Test[]>;
   public tests: Observable<Test[]>;
 
-  private mockTests: Test[] = [
-    {
-      id: 1,
-      name: 'BTC/USD Analysis',
-      description: 'Bitcoin price analysis with key support/resistance levels',
-      symbol: 'BTC/USD',
-      timeframe: 'Daily',
-      difficulty: 'Intermediate',
-      status: 'active',
-      passingScore: 80,
-      timeLimit: 60,
-      totalPoints: 100,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      data: this.generateMockChartData()
-    },
-    {
-      id: 2,
-      name: 'ETH/USD Trend Analysis',
-      description: 'Ethereum trend identification and breakout points',
-      symbol: 'ETH/USD',
-      timeframe: 'Daily',
-      difficulty: 'Intermediate',
-      status: 'active',
-      passingScore: 80,
-      timeLimit: 60,
-      totalPoints: 100,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      data: this.generateMockChartData()
-    },
-    {
-      id: 3,
-      name: 'Gold Futures',
-      description: 'Gold price patterns and key levels',
-      symbol: 'XAU/USD',
-      timeframe: 'Daily',
-      difficulty: 'Advanced',
-      status: 'active',
-      passingScore: 85,
-      timeLimit: 90,
-      totalPoints: 100,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      data: this.generateMockChartData()
-    },
-    {
-      id: 4,
-      name: 'S&P 500 Index',
-      description: 'Index analysis with support/resistance zones',
-      symbol: 'SPX',
-      timeframe: 'Weekly',
-      difficulty: 'Beginner',
-      status: 'active',
-      passingScore: 75,
-      timeLimit: 45,
-      totalPoints: 100,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      data: this.generateMockChartData()
-    }
-  ];
+  private mockTests: Test[] = [];
 
   constructor() {
     this.loadFromLocalStorage();

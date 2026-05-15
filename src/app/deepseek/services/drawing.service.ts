@@ -25,20 +25,24 @@ export class DrawingService {
   }
 
   addAdminLine(testId: number, line: DrawingLine): Observable<DrawingLine> {
-    const lines = this.adminLines.get(testId) ?? [];
-    if (!lines.find(l => l.id === line.id)) {
-      lines.push({ ...line });
-    }
-    this.adminLines.set(testId, lines);
-    this.persist();
-    return of({ ...line });
+  const lines = this.adminLines.get(testId) ?? [];
+  // ── Always stamp testId on the line so filter-by-testId works reliably ──
+  const stamped = { ...line, testId };
+  if (!lines.find(l => l.id === stamped.id)) {
+    lines.push(stamped);
   }
+  this.adminLines.set(testId, lines);
+  this.persist();
+  return of({ ...stamped });
+}
 
-  saveAdminLines(testId: number, lines: DrawingLine[]): Observable<DrawingLine[]> {
-    this.adminLines.set(testId, lines.map(l => ({ ...l })));
-    this.persist();
-    return of([...lines]);
-  }
+saveAdminLines(testId: number, lines: DrawingLine[]): Observable<DrawingLine[]> {
+  // ── Stamp every line with testId before storing ────────────────────────
+  const stamped = lines.map(l => ({ ...l, testId }));
+  this.adminLines.set(testId, stamped);
+  this.persist();
+  return of([...stamped]);
+}
 
   updateAdminLine(
     testId: number,
@@ -367,35 +371,51 @@ export class DrawingService {
 
   // ═══════════════════════════ PERSISTENCE ═════════════════════
 
-  private persist(): void {
-    try {
-      localStorage.setItem(
-        'drawing_data',
-        JSON.stringify({
-          adminLines: Array.from(this.adminLines.entries()),
-        })
-      );
-    } catch (e) {
-      console.warn('[DrawingService] persist failed:', e);
-    }
+private persist(): void {
+  try {
+    localStorage.setItem(
+      'drawing_data',
+      JSON.stringify({
+        // Serialize as array of [testId, lines[]] pairs
+        adminLines: Array.from(this.adminLines.entries()),
+      })
+    );
+  } catch (e) {
+    console.warn('[DrawingService] persist failed:', e);
   }
+}
 
-  private loadFromLocalStorage(): void {
-    try {
-      const raw = localStorage.getItem('drawing_data');
-      if (!raw) return;
+private loadFromLocalStorage(): void {
+  try {
+    const raw = localStorage.getItem('drawing_data');
+    if (!raw) return;
 
-      const { adminLines } = JSON.parse(raw);
-      this.adminLines = new Map(
-        (adminLines ?? []).map(([k, v]: [any, DrawingLine[]]) => [Number(k), v])
-      );
-      // userLines and matchedLines are session-only — not persisted.
-      this.userLines    = new Map();
-      this.matchedLines = new Map();
-    } catch {
-      this.adminLines   = new Map();
-      this.userLines    = new Map();
-      this.matchedLines = new Map();
-    }
+    const parsed = JSON.parse(raw);
+    const adminEntries: [number, DrawingLine[]][] = (parsed.adminLines ?? []).map(
+      ([k, v]: [any, DrawingLine[]]) => [Number(k), v]
+    );
+
+    // ── Validate: only keep entries where lines actually match their key ──
+    this.adminLines = new Map(
+      adminEntries.map(([testId, lines]) => [
+        testId,
+        (lines ?? []).filter(l => l && l.id), // drop corrupt entries
+      ])
+    );
+
+    // userLines and matchedLines are session-only — never persisted
+    this.userLines    = new Map();
+    this.matchedLines = new Map();
+
+    console.log(
+      '[DrawingService] Loaded from localStorage:',
+      Array.from(this.adminLines.entries()).map(([k, v]) => `testId=${k}: ${v.length} lines`)
+    );
+  } catch (err) {
+    console.warn('[DrawingService] loadFromLocalStorage failed, resetting:', err);
+    this.adminLines   = new Map();
+    this.userLines    = new Map();
+    this.matchedLines = new Map();
   }
+}
 }

@@ -245,10 +245,8 @@
   width: 100%;
   height: 600px;
 
-  // Cursor classes toggled by [class.cursor-crosshair] / [class.cursor-pointer]
-  // in the template based on activeTool.
   &.cursor-crosshair { cursor: crosshair; }
-  &.cursor-pointer   { cursor: default; }
+  &.cursor-pointer   { cursor: crosshair; } // ← was 'default', now always crosshair
 }
 
 // ── Handle overlay canvas ────────────────────────────────────────────────────

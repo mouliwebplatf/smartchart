@@ -293,121 +293,161 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     this.updateCanvasSize();
   };
 
-  private async initChart(): Promise<void> {
-    const container = this.chartContainer.nativeElement;
-    if (container.clientWidth === 0) {
-      console.error('[Chart] Chart container zero width');
+private async initChart(): Promise<void> {
+  const container = this.chartContainer.nativeElement;
+  if (container.clientWidth === 0) {
+    console.error('[Chart] Chart container zero width');
+    return;
+  }
+
+  // ── Force crosshair cursor over the chart library's injected DOM ──────────
+  if (!document.getElementById('lc-cursor-override')) {
+    const style = document.createElement('style');
+    style.id = 'lc-cursor-override';
+    style.textContent = `
+      .chart-container,
+      .chart-container *,
+      .chart-container canvas,
+      .tv-lightweight-charts,
+      .tv-lightweight-charts *,
+      .tv-lightweight-charts canvas {
+        cursor: crosshair !important;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  const t = this.themes[this.currentTheme];
+
+  this.chart = createChart(container, {
+    width: container.clientWidth,
+    height: 600,
+    layout: {
+      background: { color: t.background },
+      textColor: t.textColor,
+      fontFamily: 'Arial',
+      fontSize: 12,
+    },
+    grid: {
+      vertLines: { color: t.gridColor, style: 1 },
+      horzLines: { color: t.gridColor, style: 1 },
+    },
+    timeScale: {
+      timeVisible: true,
+      secondsVisible: false,
+      borderVisible: true,
+      borderColor: t.borderColor,
+      fixLeftEdge: false,
+      fixRightEdge: false,
+      rightOffset: 5,
+      tickMarkFormatter: (time: any) => {
+        const d = new Date(time * 1000);
+        const month = d.toLocaleString('en-US', { month: 'short' });
+        const day = d.getDate();
+        return `${month} ${day}`;
+      },
+    },
+    rightPriceScale: {
+      visible: true,
+      autoScale: true,
+      borderVisible: true,
+      borderColor: t.borderColor,
+      scaleMargins: { top: 0.1, bottom: 0.1 },
+    },
+    leftPriceScale: { visible: false },
+
+    // ── mode 0 = true fixed plus-sign crosshair (not magnet-snapping)
+    //    style 0 = solid lines
+    crosshair: {
+      mode: 0,
+      vertLine: { color: '#758696', width: 1, style: 0, visible: true, labelVisible: true },
+      horzLine: { color: '#758696', width: 1, style: 0, visible: true, labelVisible: true },
+    },
+
+    handleScroll: {
+      vertTouchDrag: true,
+      horzTouchDrag: true,
+      mouseWheel: true,
+      pressedMouseMove: true,
+    },
+    handleScale: {
+      axisPressedMouseMove: true,
+      mouseWheel: true,
+      pinch: true,
+    },
+  });
+
+  // ── Re-apply crosshair cursor after library injects its own canvas/divs ───
+  const forceChartCursor = (): void => {
+    container.style.cursor = 'crosshair';
+    container.querySelectorAll('*').forEach((child: Element) => {
+      (child as HTMLElement).style.cursor = 'crosshair';
+    });
+  };
+  forceChartCursor();
+  setTimeout(() => forceChartCursor(), 300);
+  setTimeout(() => forceChartCursor(), 800);
+
+  // ── REQ #1: hide last-value label for admin on candlestick ────────────────
+  this.candlestickSeries = this.chart.addSeries(CandlestickSeries, {
+    upColor: '#26a69a',
+    downColor: '#ef5350',
+    borderVisible: false,
+    wickUpColor: '#26a69a',
+    wickDownColor: '#ef5350',
+    priceLineVisible: false,
+    lastValueVisible: this.userRole !== 'admin',
+  });
+
+  this.chart.priceScale('right').applyOptions({ visible: true, autoScale: true, mode: 0 });
+  this.chart.timeScale().applyOptions({ visible: true, timeVisible: true, secondsVisible: false });
+  this.chart.timeScale().fitContent();
+
+  this.chartClickSubscription?.();
+  this.chartCrosshairSubscription?.();
+
+  this.chartClickSubscription = this.chart.subscribeClick((param: any) => {
+    if (!param?.point) return;
+    if (this.clickTimeout) {
+      clearTimeout(this.clickTimeout);
+      this.clickTimeout = null;
+      this.isDoubleClick = true;
       return;
     }
-
-    const t = this.themes[this.currentTheme];
-
-    this.chart = createChart(container, {
-      width: container.clientWidth,
-      height: 600,
-      layout: {
-        background: { color: t.background },
-        textColor: t.textColor,
-        fontFamily: 'Arial',
-        fontSize: 12,
-      },
-      grid: {
-        vertLines: { color: t.gridColor, style: 1 },
-        horzLines: { color: t.gridColor, style: 1 },
-      },
-      timeScale: {
-        timeVisible: true,
-        secondsVisible: false,
-        borderVisible: true,
-        borderColor: t.borderColor,
-        fixLeftEdge: false,
-        fixRightEdge: false,
-        rightOffset: 5,
-        tickMarkFormatter: (time: any) => {
-          const d = new Date(time * 1000);
-          const month = d.toLocaleString('en-US', { month: 'short' });
-          const day = d.getDate();
-          return `${month} ${day}`;
-        },
-      },
-      rightPriceScale: {
-        visible: true,
-        autoScale: true,
-        borderVisible: true,
-        borderColor: t.borderColor,
-        scaleMargins: { top: 0.1, bottom: 0.1 },
-      },
-      leftPriceScale: { visible: false },
-      crosshair: {
-        mode: 1,
-        vertLine: { color: '#758696', width: 1, style: 2, visible: true, labelVisible: true },
-        horzLine: { color: '#758696', width: 1, style: 2, visible: true, labelVisible: true },
-      },
-      handleScroll: { vertTouchDrag: true, horzTouchDrag: true, mouseWheel: true, pressedMouseMove: true },
-      handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
-    });
-
-    // ── REQ #1: for admin role, hide the candlestick's last-value label
-    //            so no price is shown on the right scale by default ─────────────
-    this.candlestickSeries = this.chart.addSeries(CandlestickSeries, {
-      upColor: '#26a69a',
-      downColor: '#ef5350',
-      borderVisible: false,
-      wickUpColor: '#26a69a',
-      wickDownColor: '#ef5350',
-      priceLineVisible: false,              // REQ #1: hide price line
-      lastValueVisible: this.userRole !== 'admin', // REQ #1: hide label for admin
-    });
-    // ─────────────────────────────────────────────────────────────────────────────
-
-    this.chart.priceScale('right').applyOptions({ visible: true, autoScale: true, mode: 0 });
-    this.chart.timeScale().applyOptions({ visible: true, timeVisible: true, secondsVisible: false });
-    this.chart.timeScale().fitContent();
-
-    this.chartClickSubscription?.();
-    this.chartCrosshairSubscription?.();
-
-    this.chartClickSubscription = this.chart.subscribeClick((param: any) => {
-      if (!param?.point) return;
-      if (this.clickTimeout) {
-        clearTimeout(this.clickTimeout);
-        this.clickTimeout = null;
-        this.isDoubleClick = true;
+    this.isDoubleClick = false;
+    this.clickTimeout = setTimeout(() => {
+      this.clickTimeout = null;
+      if (this.isDoubleClick) {
+        this.isDoubleClick = false;
         return;
       }
-      this.isDoubleClick = false;
-      this.clickTimeout = setTimeout(() => {
-        this.clickTimeout = null;
-        if (this.isDoubleClick) {
-          this.isDoubleClick = false;
-          return;
-        }
-        if (this.activeTool === 'select') {
-          if (this.dragDistance <= 5) this.handleSelectClick(param);
-          this.dragDistance = 0;
-        } else {
-          this.handleChartClick(param);
-        }
-      }, 200);
-    });
-
-    this.chartCrosshairSubscription = this.chart.subscribeCrosshairMove((param: any) => {
-      if (!param?.point) return;
-      if (this.isDrawing && this.hasFirstPoint && this.previewSeries) {
-        this.updatePreviewLine(param);
+      if (this.activeTool === 'select') {
+        if (this.dragDistance <= 5) this.handleSelectClick(param);
+        this.dragDistance = 0;
+      } else {
+        this.handleChartClick(param);
       }
-    });
+    }, 200);
+  });
 
-    this.chart.timeScale().subscribeVisibleTimeRangeChange(() => {
-      if (!this.ensureChart()) return;
-      this.chart.priceScale('right').applyOptions({ visible: true });
-      this.chart.timeScale().applyOptions({ visible: true });
-    });
+  this.chartCrosshairSubscription = this.chart.subscribeCrosshairMove((param: any) => {
+    if (!param?.point) return;
+    if (this.isDrawing && this.hasFirstPoint && this.previewSeries) {
+      this.updatePreviewLine(param);
+    }
+  });
 
-    window.addEventListener('resize', this.handleResize);
-    await this.loadChartData();
-    setTimeout(() => this.setupHandleCanvas(), 100);
-  }
+  this.chart.timeScale().subscribeVisibleTimeRangeChange(() => {
+    if (!this.ensureChart()) return;
+    this.chart.priceScale('right').applyOptions({ visible: true });
+    this.chart.timeScale().applyOptions({ visible: true });
+  });
+
+  window.addEventListener('resize', this.handleResize);
+  await this.loadChartData();
+  setTimeout(() => this.setupHandleCanvas(), 100);
+}
+
 
   // ==================== HANDLE CANVAS ====================
 
@@ -588,60 +628,68 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     }
   }
 
-  private finishDrawing(endPoint: Point): void {
-    if (this.testComplete && this.userRole !== 'admin') return;
+ private finishDrawing(endPoint: Point): void {
+  if (this.testComplete && this.userRole !== 'admin') return;
 
-    this.stopAllHintBlinks();
+  this.stopAllHintBlinks();
 
-    let start: Point, end: Point;
+  let start: Point, end: Point;
 
-    if (this.activeTool === 'straightline') {
-      const tr = this.chart.timeScale().getVisibleRange();
-      if (!tr) return;
-      start = { x: 0, y: 0, time: tr.from as number, price: endPoint.price };
-      end = { x: 0, y: 0, time: tr.to as number, price: endPoint.price };
-    } else {
-      if (!this.drawingStartPoint) return;
-      start = { ...this.drawingStartPoint };
-      end = { ...endPoint };
-      if (this.activeTool === 'hline') end.price = start.price;
-      if (this.activeTool !== 'ray' && this.activeTool !== 'vline' && start.time > end.time) {
-        [start, end] = [end, start];
-      }
-    }
-
-    const newLine: DrawingLine = {
-      id: uuidv4(),
-      testId: this.testId,
-      type: this.userRole === 'admin' ? 'admin' : 'user',
-      tool: this.activeTool === 'straightline' ? 'straightline' : this.activeTool as any,
-      originalTool: this.activeTool,
-      startX: start.x, startY: start.y,
-      endX: end.x, endY: end.y,
-      startTime: start.time, startPrice: start.price,
-      endTime: end.time, endPrice: end.price,
-      color: this.userRole === 'admin' ? '#FF6B6B' : '#FFFFFF',
-      createdAt: new Date(),
-    };
-
-    if (this.activeTool === 'straightline') {
-      this.userLines.push(newLine);
-      this.renderLines();
-      this.showMessage('✓ Straight line drawn (temporary - not saved)', 'info');
-      return;
-    }
-
-    if (this.userRole === 'admin') {
-      this.adminLines.push(newLine);
-      this.drawingService.addAdminLine(this.testId, newLine)
-        .pipe(takeUntil(this.destroy$))
-        .subscribe();
-      this.renderLines();
-      this.showMessage('✓ Admin line drawn. Click Save to persist.', 'success');
-    } else {
-      this.validateAndSaveUserLine(newLine);
+  if (this.activeTool === 'straightline') {
+    const tr = this.chart.timeScale().getVisibleRange();
+    if (!tr) return;
+    start = { x: 0, y: 0, time: tr.from as number, price: endPoint.price };
+    end = { x: 0, y: 0, time: tr.to as number, price: endPoint.price };
+  } else {
+    if (!this.drawingStartPoint) return;
+    start = { ...this.drawingStartPoint };
+    end = { ...endPoint };
+    if (this.activeTool === 'hline') end.price = start.price;
+    if (this.activeTool !== 'ray' && this.activeTool !== 'vline' && start.time > end.time) {
+      [start, end] = [end, start];
     }
   }
+
+  const newLine: DrawingLine = {
+    id: uuidv4(),
+    testId: this.testId,
+    type: this.userRole === 'admin' ? 'admin' : 'user',
+    tool: this.activeTool === 'straightline' ? 'straightline' : this.activeTool as any,
+    originalTool: this.activeTool,
+    startX: start.x, startY: start.y,
+    endX: end.x, endY: end.y,
+    startTime: start.time, startPrice: start.price,
+    endTime: end.time, endPrice: end.price,
+    color: this.userRole === 'admin' ? '#FF6B6B' : '#FFFFFF',
+    createdAt: new Date(),
+  };
+
+  if (this.activeTool === 'straightline') {
+    this.userLines.push(newLine);
+    this.renderLines();
+    this.showMessage('✓ Straight line drawn (temporary - not saved)', 'info');
+    return;
+  }
+
+  if (this.userRole === 'admin') {
+    this.adminLines.push(newLine);
+    // ── Auto-persist to localStorage immediately on every draw ────────────
+    // This ensures if admin closes without clicking Save, lines aren't lost.
+    this.drawingService.addAdminLine(this.testId, newLine)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: () => {
+          // addAdminLine calls persist() internally — localStorage updated.
+          this.showMessage('✓ Admin line drawn & auto-saved.', 'success');
+        },
+        error: () => this.showMessage('Line drawn but auto-save failed.', 'error'),
+      });
+    this.renderLines();
+  } else {
+    this.validateAndSaveUserLine(newLine);
+  }
+}
+
 
   private updatePreviewLine(param: any): void {
     if (this.updatingPreview || !this.isDrawing || !this.previewSeries) return;
@@ -1521,55 +1569,72 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
     }
   }
 
-  resetAllLines(): void {
-    if (!confirm('Reset ALL lines? This cannot be undone.')) return;
+resetAllLines(): void {
+  if (!confirm('Reset ALL lines? This cannot be undone.')) return;
 
-    this.userLines = [];
-    this.adminLines = [];
-    this.selectedLineId = null;
-    this.selectedLineOwner = null;
-    this.matchedCount = 0;
-    this.testComplete = false;
-    this.clearHandles();
-    this.renderLines();
+  this.userLines = [];
+  this.adminLines = [];
+  this.selectedLineId = null;
+  this.selectedLineOwner = null;
+  this.matchedCount = 0;
+  this.testComplete = false;
+  this.clearHandles();
 
-    if (this.userRole === 'admin') {
-      // DrawingService.clearAdminLines() calls persist() which updates localStorage.
-      this.drawingService.clearAllUserLines(this.testId)
-        .pipe(takeUntil(this.destroy$)).subscribe();
-      this.drawingService.clearAdminLines(this.testId)
-        .pipe(takeUntil(this.destroy$)).subscribe();
-    } else {
-      this.drawingService.clearMatchedLines(this.testId);
-      this.drawingService.clearAllUserLines(this.testId)
-        .pipe(takeUntil(this.destroy$)).subscribe();
-      this.drawingService.getAdminLines(this.testId)
-        .pipe(takeUntil(this.destroy$))
-        .subscribe(lines => { this.totalAdminLines = (lines || []).length; });
-    }
+  // Clear all series from chart immediately
+  this.lineSeriesMap.forEach((series) => {
+    try { this.chart.removeSeries(series); } catch { }
+  });
+  this.lineSeriesMap.clear();
+
+  if (this.userRole === 'admin') {
+    // clearAdminLines calls persist() — wipes this testId's lines from localStorage
+    this.drawingService.clearAdminLines(this.testId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(() => {
+        this.showMessage('All admin lines cleared.', 'success');
+      });
+    this.drawingService.clearAllUserLines(this.testId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe();
+  } else {
+    this.drawingService.clearMatchedLines(this.testId);
+    this.drawingService.clearAllUserLines(this.testId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe();
+    this.drawingService.getAdminLines(this.testId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(lines => {
+        this.totalAdminLines = (lines || []).filter(l => l.testId === this.testId).length;
+      });
     this.showMessage('All lines cleared from view', 'success');
   }
 
+  this.renderLines();
+}
+
   // ── REQ #3: saveAllLines now also writes to localStorage ─────────────────────
-  saveAllLines(): void {
-    if (this.userRole !== 'admin') {
-      this.showMessage('Only admin can save lines.', 'error');
-      return;
-    }
-    this.drawingService.saveAdminLines(this.testId, this.adminLines)
-      .pipe(takeUntil(this.destroy$))
-      .subscribe({
-        next: (saved) => {
-          this.lastSavedTime = new Date();
-          // DrawingService.saveAdminLines() calls persist() internally,
-          // which writes to localStorage under 'drawing_data' — no extra step needed.
-          this.showMessage(`✓ ${saved.length} answer line(s) saved!`, 'success');
-        },
-        error: () => {
-          this.showMessage('Save failed.', 'error');
-        },
-      });
+saveAllLines(): void {
+  if (this.userRole !== 'admin') {
+    this.showMessage('Only admin can save lines.', 'error');
+    return;
   }
+
+  // ── Ensure every line has the correct testId before saving ────────────────
+  const linesToSave = this.adminLines.map(l => ({ ...l, testId: this.testId }));
+
+  this.drawingService.saveAdminLines(this.testId, linesToSave)
+    .pipe(takeUntil(this.destroy$))
+    .subscribe({
+      next: (saved) => {
+        this.adminLines = saved;
+        this.lastSavedTime = new Date();
+        this.showMessage(`✓ ${saved.length} answer line(s) saved!`, 'success');
+      },
+      error: () => {
+        this.showMessage('Save failed.', 'error');
+      },
+    });
+}
   // ─────────────────────────────────────────────────────────────────────────────
 
   restartTest(): void {
@@ -1681,57 +1746,74 @@ export class ChartComponent implements AfterViewInit, OnDestroy {
   // ── REQ #3: loadData — users pull admin lines from localStorage first,
   //            then fall back to the API. Admin lines are NEVER rendered for users
   //            (they stay in memory for validation only). ─────────────────────────
-  private async loadData(): Promise<void> {
-    if (this.userRole === 'admin') {
-      this.userLines = [];
-      this.adminLines = [];
-      this.drawingService.clearAdminLinesInMemoryOnly(this.testId);
+private async loadData(): Promise<void> {
+  if (this.userRole === 'admin') {
+    // ── Reset component state first ───────────────────────────────────────
+    this.userLines = [];
+    this.adminLines = [];
+    this.selectedLineId = null;
+    this.selectedLineOwner = null;
+    this.matchedCount = 0;
+    this.testComplete = false;
 
-      // DrawingService loaded admin lines from localStorage ('drawing_data') on
-      // construction. Re-fetch them into the component's local array so the admin
-      // can see and edit previously saved lines without a fresh save.
-      this.drawingService.getAdminLines(this.testId)
-        .pipe(takeUntil(this.destroy$))
-        .subscribe(lines => {
-          this.adminLines = lines || [];
-          setTimeout(() => {
-            this.renderLines();
-            this.drawHandles();
-          }, 0);
-          if (this.adminLines.length) {
-            this.showMessage(`Loaded ${this.adminLines.length} saved admin line(s).`, 'info');
-          }
-        });
+    // ── FIX: Do NOT call clearAdminLinesInMemoryOnly() here.
+    //    DrawingService.loadFromLocalStorage() already populated adminLines
+    //    in the service constructor from 'drawing_data' in localStorage.
+    //    Clearing before getAdminLines() was the bug that made saved lines
+    //    vanish on every re-open.
+    //
+    //    getAdminLines(testId) returns ONLY lines for this specific testId,
+    //    so there is no cross-test contamination.
 
-    } else {
-      // ── User flow ────────────────────────────────────────────────────────────
-      this.drawingService.clearMatchedLines(this.testId);
+    this.drawingService.getAdminLines(this.testId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(lines => {
+        // ── Only load lines that belong to this testId (double-check) ────
+        this.adminLines = (lines || []).filter(l => l.testId === this.testId);
 
-      // 1. Load user's own lines (exclude transient straightlines)
-      this.drawingService.getUserLines(this.testId)
-        .pipe(takeUntil(this.destroy$))
-        .subscribe(lines => {
-          this.userLines = (lines || []).filter(line => line.tool !== 'straightline');
+        setTimeout(() => {
           this.renderLines();
           this.drawHandles();
-        });
+        }, 0);
 
-      this.matchedCount = 0;
-      this.testComplete = false;
+        if (this.adminLines.length > 0) {
+          this.showMessage(
+            `Loaded ${this.adminLines.length} saved admin line(s) — ready to edit.`,
+            'info'
+          );
+        } else {
+          this.showMessage('No saved lines for this test. Draw to create answer lines.', 'info');
+        }
+      });
 
-      // 2. Load admin answer lines for validation:
-      //    Try localStorage first (fast, offline-capable), then fall back to API.
-      // Admin lines are already loaded by DrawingService.loadFromLocalStorage()
-      // on construction (it reads 'drawing_data' from localStorage which includes
-      // adminLines keyed by testId). We just need to read how many there are.
-      this.drawingService.getAdminLines(this.testId)
-        .pipe(takeUntil(this.destroy$))
-        .subscribe(lines => {
-          this.totalAdminLines = (lines || []).length;
-        });
-      // ────────────────────────────────────────────────────────────────────────
-    }
+  } else {
+    // ── User flow ─────────────────────────────────────────────────────────
+    this.drawingService.clearMatchedLines(this.testId);
+
+    // 1. Load user's own saved lines (exclude transient straightlines)
+    this.drawingService.getUserLines(this.testId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(lines => {
+        this.userLines = (lines || []).filter(l =>
+          l.tool !== 'straightline' && l.testId === this.testId
+        );
+        this.renderLines();
+        this.drawHandles();
+      });
+
+    this.matchedCount = 0;
+    this.testComplete = false;
+
+    // 2. Load admin answer lines count for progress tracking.
+    //    Lines are already in service memory (loaded from localStorage
+    //    in constructor) — just read the count.
+    this.drawingService.getAdminLines(this.testId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(lines => {
+        this.totalAdminLines = (lines || []).filter(l => l.testId === this.testId).length;
+      });
   }
+}
   // ─────────────────────────────────────────────────────────────────────────────
 
   private async loadChartData(): Promise<void> {
