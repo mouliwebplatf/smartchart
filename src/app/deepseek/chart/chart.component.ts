@@ -35,6 +35,7 @@ type ToolMode = 'trendline' | 'hline' | 'vline' | 'ray' | 'straightline' | 'sele
   styleUrls: ['./chart.component.scss'],
 })
 export class ChartComponent implements AfterViewInit, OnDestroy {
+  private pendingAdminLines: DrawingLine[] = []; 
   private undoStack: Array<{ userLines: DrawingLine[]; adminLines: DrawingLine[] }> = [];
 private readonly MAX_UNDO = 20;
 
@@ -675,7 +676,8 @@ private finishDrawing(endPoint: Point): void {
         error: () => this.showMessage('Line drawn but auto-save failed.', 'error'),
       });
     this.renderLines();
-  } else {
+  } 
+  else {
     this.pushUndo();
     this.validateAndSaveUserLine(newLine);
   }
@@ -1640,27 +1642,20 @@ resetAllLines(): void {
 
   // ── REQ #3: saveAllLines now also writes to localStorage ─────────────────────
 saveAllLines(): void {
-  if (this.userRole !== 'admin') {
-    this.showMessage('Only admin can save lines.', 'error');
-    return;
+    if (this.userRole !== 'admin') {
+      this.showMessage('Only admin can save lines.', 'error');
+      return;
+    }
+    this.drawingService.saveAdminLines(this.testId, this.adminLines)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (saved) => {
+          this.lastSavedTime = new Date();
+          this.showMessage(`✓ ${saved.length} answer line(s) saved!`, 'success');
+        },
+        error: () => this.showMessage('Save failed.', 'error'),
+      });
   }
-
-  // ── Ensure every line has the correct testId before saving ────────────────
-  const linesToSave = this.adminLines.map(l => ({ ...l, testId: this.testId }));
-
-  this.drawingService.saveAdminLines(this.testId, linesToSave)
-    .pipe(takeUntil(this.destroy$))
-    .subscribe({
-      next: (saved) => {
-        this.adminLines = saved;
-        this.lastSavedTime = new Date();
-        this.showMessage(`✓ ${saved.length} answer line(s) saved!`, 'success');
-      },
-      error: () => {
-        this.showMessage('Save failed.', 'error');
-      },
-    });
-}
   // ─────────────────────────────────────────────────────────────────────────────
 
   restartTest(): void {
@@ -1767,62 +1762,60 @@ saveAllLines(): void {
     }
   }
 
-  // ==================== DATA ====================
 
-  // ── REQ #3: loadData — users pull admin lines from localStorage first,
-  //            then fall back to the API. Admin lines are NEVER rendered for users
-  //            (they stay in memory for validation only). ─────────────────────────
-private async loadData(): Promise<void> {
+// private async loadData(): Promise<void> {
+//     if (this.userRole === 'admin') {
+//       this.userLines  = [];
+//       this.adminLines = [];
+//       this.drawingService.clearAdminLinesInMemoryOnly(this.testId);
+//       setTimeout(() => {
+//         this.renderLines();
+//         this.drawHandles();
+//       }, 0);
+//     } else {
+//       this.drawingService.clearMatchedLines(this.testId);
+
+//       this.drawingService.getUserLines(this.testId)
+//         .pipe(takeUntil(this.destroy$))
+//         .subscribe(lines => {
+//           this.userLines = (lines || []).filter(line => line.tool !== 'straightline');
+//           this.renderLines();
+//           this.drawHandles();
+//         });
+
+//       this.matchedCount = 0;
+//       this.testComplete = false;
+
+//       this.drawingService.getAdminLines(this.testId)
+//         .pipe(takeUntil(this.destroy$))
+//         .subscribe(lines => { this.totalAdminLines = (lines || []).length; });
+//     }
+//   }
+  // ─────────────────────────────────────────────────────────────────────────────
+
+ 
+ 
+ private async loadData(): Promise<void> {
   if (this.userRole === 'admin') {
-    // ── Reset component state first ───────────────────────────────────────
-    this.userLines = [];
+    this.userLines  = [];
     this.adminLines = [];
-    this.selectedLineId = null;
-    this.selectedLineOwner = null;
-    this.matchedCount = 0;
-    this.testComplete = false;
 
-    // ── FIX: Do NOT call clearAdminLinesInMemoryOnly() here.
-    //    DrawingService.loadFromLocalStorage() already populated adminLines
-    //    in the service constructor from 'drawing_data' in localStorage.
-    //    Clearing before getAdminLines() was the bug that made saved lines
-    //    vanish on every re-open.
-    //
-    //    getAdminLines(testId) returns ONLY lines for this specific testId,
-    //    so there is no cross-test contamination.
-
+    // Load previously saved admin answer lines so admin can see and edit them
     this.drawingService.getAdminLines(this.testId)
       .pipe(takeUntil(this.destroy$))
       .subscribe(lines => {
-        // ── Only load lines that belong to this testId (double-check) ────
-        this.adminLines = (lines || []).filter(l => l.testId === this.testId);
-
-        setTimeout(() => {
-          this.renderLines();
-          this.drawHandles();
-        }, 0);
-
-        if (this.adminLines.length > 0) {
-          this.showMessage(
-            `Loaded ${this.adminLines.length} saved admin line(s) — ready to edit.`,
-            'info'
-          );
-        } else {
-          this.showMessage('No saved lines for this test. Draw to create answer lines.', 'info');
-        }
+        this.adminLines = lines ?? [];
+        this.renderLines();
+        this.drawHandles();
       });
 
   } else {
-    // ── User flow ─────────────────────────────────────────────────────────
     this.drawingService.clearMatchedLines(this.testId);
 
-    // 1. Load user's own saved lines (exclude transient straightlines)
     this.drawingService.getUserLines(this.testId)
       .pipe(takeUntil(this.destroy$))
       .subscribe(lines => {
-        this.userLines = (lines || []).filter(l =>
-          l.tool !== 'straightline' && l.testId === this.testId
-        );
+        this.userLines = (lines || []).filter(line => line.tool !== 'straightline');
         this.renderLines();
         this.drawHandles();
       });
@@ -1830,18 +1823,13 @@ private async loadData(): Promise<void> {
     this.matchedCount = 0;
     this.testComplete = false;
 
-    // 2. Load admin answer lines count for progress tracking.
-    //    Lines are already in service memory (loaded from localStorage
-    //    in constructor) — just read the count.
     this.drawingService.getAdminLines(this.testId)
       .pipe(takeUntil(this.destroy$))
       .subscribe(lines => {
-        this.totalAdminLines = (lines || []).filter(l => l.testId === this.testId).length;
+        this.totalAdminLines = (lines || []).length;
       });
   }
 }
-  // ─────────────────────────────────────────────────────────────────────────────
-
   private async loadChartData(): Promise<void> {
     if (isNaN(this.testId) || this.testId <= 0) {
       console.warn('[Chart] Invalid testId:', this.testId);
