@@ -1,10 +1,4 @@
-// chart.component.ts
-// CHANGES (3 requirements):
-//   1. Admin lines: priceLineVisible=false, lastValueVisible=false on ALL series
-//      + candlestick lastValueVisible hidden for admin role
-//   2. Chart pan/scroll disabled while drawing, re-enabled on finish/cancel
-//   3. Admin lines persisted to localStorage (key: `adminLines_<testId>`)
-//      Users auto-load them on chart open for validation (hidden from view)
+
 
 import {
   Component, ElementRef, ViewChild,
@@ -41,6 +35,8 @@ type ToolMode = 'trendline' | 'hline' | 'vline' | 'ray' | 'straightline' | 'sele
   styleUrls: ['./chart.component.scss'],
 })
 export class ChartComponent implements AfterViewInit, OnDestroy {
+  private undoStack: Array<{ userLines: DrawingLine[]; adminLines: DrawingLine[] }> = [];
+private readonly MAX_UNDO = 20;
 
   // ── Unsubscribe from chart events ──
   private chartClickSubscription: (() => void) | null = null;
@@ -499,10 +495,10 @@ private async initChart(): Promise<void> {
     const ctx = this.handleCanvasContext;
     const isActive = (this.isExtendingLeftHandle && type === 'left') ||
       (this.isExtendingRightHandle && type === 'right');
-    const radius = isActive ? 8 : 6;
+    const radius = isActive ? 4 : 3;
     ctx.save();
     ctx.beginPath();
-    ctx.arc(x, y, radius + 2, 0, Math.PI * 2);
+    ctx.arc(x, y, radius + 1, 0, Math.PI * 2);
     ctx.fillStyle = isActive ? 'rgba(255,165,0,0.3)' : 'rgba(255,165,0,0.15)';
     ctx.fill();
     ctx.beginPath();
@@ -512,7 +508,7 @@ private async initChart(): Promise<void> {
     ctx.beginPath();
     ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.strokeStyle = '#FFFFFF';
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 1;
     ctx.stroke();
     ctx.restore();
   }
@@ -544,8 +540,8 @@ private async initChart(): Promise<void> {
     const s = this.chartToScreenPoint(line.startTime, line.startPrice);
     const e = this.chartToScreenPoint(line.endTime, line.endPrice);
     if (!s || !e) return null;
-    if (Math.hypot(sp.x - s.x, sp.y - s.y) < 15) return { type: 'left', lineId: line.id };
-    if (Math.hypot(sp.x - e.x, sp.y - e.y) < 15) return { type: 'right', lineId: line.id };
+    if (Math.hypot(sp.x - s.x, sp.y - s.y) < 8) return { type: 'left', lineId: line.id };
+    if (Math.hypot(sp.x - e.x, sp.y - e.y) < 8) return { type: 'right', lineId: line.id };
     return null;
   }
 
@@ -581,54 +577,51 @@ private async initChart(): Promise<void> {
     }
   }
 
-  private handleChartClick(param: any): void {
-    if (this.testComplete && this.userRole !== 'admin') {
-      this.showMessage('✅ Test already complete — no more drawing allowed.', 'info');
-      return;
-    }
-
-    const sp: ScreenPoint = { x: param.point.x, y: param.point.y };
-    const cp = this.screenToChartPoint(sp);
-    if (!cp) return;
-
-    if (this.activeTool === 'straightline') {
-      this.finishDrawing(cp);
-      return;
-    }
-
-    if (!this.isDrawing) {
-      this.isDrawing = true;
-      this.drawingStartPoint = cp;
-
-      // ── REQ #2: lock chart movement as soon as first point is placed ──────────
-      this.lockChartInteraction();
-      // ──────────────────────────────────────────────────────────────────────────
-
-      let previewColor = '#4ECDC4';
-      let previewLineStyle = 0;
-
-      if (this.activeTool === 'hline') {
-        previewColor = '#FFFFFF';
-        previewLineStyle = 1;
-      }
-
-      this.previewSeries = this.chart.addSeries(LineSeries, {
-        color: previewColor,
-        lineWidth: 2,
-        lineStyle: previewLineStyle,
-        priceLineVisible: false,
-        lastValueVisible: false,
-      });
-      this.hasFirstPoint = true;
-    } else {
-      let endPoint = cp;
-      if (this.shiftHeld) endPoint = this.snapToAngle(this.drawingStartPoint!, cp);
-      this.finishDrawing(endPoint);
-      this.cancelDrawing();  // also calls unlockChartInteraction()
-    }
+ private handleChartClick(param: any): void {
+  if (this.testComplete && this.userRole !== 'admin') {
+    this.showMessage('✅ Test already complete — no more drawing allowed.', 'info');
+    return;
   }
 
- private finishDrawing(endPoint: Point): void {
+  const sp: ScreenPoint = { x: param.point.x, y: param.point.y };
+  const cp = this.screenToChartPoint(sp);
+  if (!cp) return;
+
+  if (this.activeTool === 'straightline') {
+    this.finishDrawing(cp);
+    return;
+  }
+
+  if (!this.isDrawing) {
+    this.isDrawing = true;
+    this.drawingStartPoint = cp;
+    this.lockChartInteraction();
+
+    let previewColor = '#4ECDC4';
+    let previewLineStyle = 0;
+
+    if (this.activeTool === 'hline') {
+      previewColor = '#FFFFFF';
+      previewLineStyle = 1;
+    }
+
+    this.previewSeries = this.chart.addSeries(LineSeries, {
+      color: previewColor,
+      lineWidth: 1,   // ← was 2
+      lineStyle: previewLineStyle,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+    this.hasFirstPoint = true;
+  } else {
+    let endPoint = cp;
+    if (this.shiftHeld) endPoint = this.snapToAngle(this.drawingStartPoint!, cp);
+    this.finishDrawing(endPoint);
+    this.cancelDrawing();
+  }
+}
+
+private finishDrawing(endPoint: Point): void {
   if (this.testComplete && this.userRole !== 'admin') return;
 
   this.stopAllHintBlinks();
@@ -665,6 +658,7 @@ private async initChart(): Promise<void> {
   };
 
   if (this.activeTool === 'straightline') {
+    this.pushUndo();
     this.userLines.push(newLine);
     this.renderLines();
     this.showMessage('✓ Straight line drawn (temporary - not saved)', 'info');
@@ -672,20 +666,17 @@ private async initChart(): Promise<void> {
   }
 
   if (this.userRole === 'admin') {
+    this.pushUndo();
     this.adminLines.push(newLine);
-    // ── Auto-persist to localStorage immediately on every draw ────────────
-    // This ensures if admin closes without clicking Save, lines aren't lost.
     this.drawingService.addAdminLine(this.testId, newLine)
       .pipe(takeUntil(this.destroy$))
       .subscribe({
-        next: () => {
-          // addAdminLine calls persist() internally — localStorage updated.
-          this.showMessage('✓ Admin line drawn & auto-saved.', 'success');
-        },
+        next: () => this.showMessage('✓ Admin line drawn & auto-saved.', 'success'),
         error: () => this.showMessage('Line drawn but auto-save failed.', 'error'),
       });
     this.renderLines();
   } else {
+    this.pushUndo();
     this.validateAndSaveUserLine(newLine);
   }
 }
@@ -937,60 +928,91 @@ private async initChart(): Promise<void> {
 
   // ==================== DRAG & EXTEND HANDLERS ====================
 
-  @HostListener('document:mousedown', ['$event'])
-  onMouseDown(event: MouseEvent): void {
-    this.dragDistance = 0;
-    if (this.activeTool !== 'select') return;
+ @HostListener('document:mousedown', ['$event'])
+onMouseDown(event: MouseEvent): void {
+  this.dragDistance = 0;
+  if (this.activeTool !== 'select') return;
 
-    const container = this.chartContainer?.nativeElement;
-    if (!container) return;
-    const rect = container.getBoundingClientRect();
-    if (
-      event.clientX < rect.left || event.clientX > rect.right ||
-      event.clientY < rect.top || event.clientY > rect.bottom
-    ) return;
+  const container = this.chartContainer?.nativeElement;
+  if (!container) return;
+  const rect = container.getBoundingClientRect();
+  if (
+    event.clientX < rect.left || event.clientX > rect.right ||
+    event.clientY < rect.top || event.clientY > rect.bottom
+  ) return;
 
-    const sp: ScreenPoint = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  const sp: ScreenPoint = { x: event.clientX - rect.left, y: event.clientY - rect.top };
 
-    const handle = this.getHandleAtPoint(sp);
-    if (handle) {
-      event.preventDefault();
-      event.stopPropagation();
-      this.lockChartInteraction();   // REQ #2: lock while handle-dragging too
-      this.extendingLineIdHandle = handle.lineId;
-      const selected = this.userLines.find(l => l.id === handle.lineId)
-        ?? this.adminLines.find(l => l.id === handle.lineId);
-      if (selected) this.originalLineState = structuredClone(selected);
-      if (handle.type === 'left') { this.isExtendingLeftHandle = true; }
-      else { this.isExtendingRightHandle = true; }
-      return;
-    }
-
-    const hit = this.getLineAtPoint(sp);
-    if (!hit) return;
-
+  const handle = this.getHandleAtPoint(sp);
+  if (handle) {
     event.preventDefault();
     event.stopPropagation();
+    this.lockChartInteraction();
+    this.extendingLineIdHandle = handle.lineId;
+    const selected = this.userLines.find(l => l.id === handle.lineId)
+      ?? this.adminLines.find(l => l.id === handle.lineId);
+    if (selected) this.originalLineState = structuredClone(selected);
+    if (handle.type === 'left') { this.isExtendingLeftHandle = true; }
+    else { this.isExtendingRightHandle = true; }
+    return;
+  }
 
-    this.selectedLineId = hit.id;
-    this.selectedLineOwner = hit.owner;
-    this.draggedLineId = hit.id;
+  const hit = this.getLineAtPoint(sp);
+  if (!hit) return;
 
-    this.lockChartInteraction();   // REQ #2: lock while body-dragging
+  event.preventDefault();
+  event.stopPropagation();
 
-    this.isDraggingLine = true;
+  this.selectedLineId = hit.id;
+  this.selectedLineOwner = hit.owner;
+  this.lockChartInteraction();
+  this.isDraggingLine = true;
 
-    const selectedLine = hit.owner === 'user'
+  // ── Ctrl+drag → clone the line and drag the copy ──────────────────────
+  if (event.ctrlKey || event.metaKey) {
+    const original = hit.owner === 'user'
       ? this.userLines.find(l => l.id === hit.id)
       : this.adminLines.find(l => l.id === hit.id);
-    if (!selectedLine) return;
 
-    this.dragLineSnapshot = structuredClone(selectedLine);
-    const chartPoint = this.screenToChartPoint(sp);
-    if (chartPoint) this.dragStartPoint = { time: chartPoint.time, price: chartPoint.price };
+    if (original && original.tool !== 'straightline') {
+      this.pushUndo();
 
-    this.renderLines();
+      const clone: DrawingLine = {
+        ...structuredClone(original),
+        id: uuidv4(),
+        type: 'user',
+        color: '#FFFFFF',
+        createdAt: new Date(),
+      };
+
+      this.userLines.push(clone);
+      this.selectedLineId = clone.id;
+      this.selectedLineOwner = 'user';
+      this.draggedLineId = clone.id;
+      this.dragLineSnapshot = structuredClone(clone);
+
+      const chartPoint = this.screenToChartPoint(sp);
+      if (chartPoint) this.dragStartPoint = { time: chartPoint.time, price: chartPoint.price };
+
+      this.renderLines();
+      return;
+    }
   }
+  // ──────────────────────────────────────────────────────────────────────
+
+  this.draggedLineId = hit.id;
+
+  const selectedLine = hit.owner === 'user'
+    ? this.userLines.find(l => l.id === hit.id)
+    : this.adminLines.find(l => l.id === hit.id);
+  if (!selectedLine) return;
+
+  this.dragLineSnapshot = structuredClone(selectedLine);
+  const chartPoint = this.screenToChartPoint(sp);
+  if (chartPoint) this.dragStartPoint = { time: chartPoint.time, price: chartPoint.price };
+
+  this.renderLines();
+}
 
   @HostListener('document:mousemove', ['$event'])
   onMouseMove(event: MouseEvent): void {
@@ -1057,29 +1079,31 @@ private async initChart(): Promise<void> {
   }
 
   @HostListener('document:mouseup')
-  onMouseUp(): void {
-    if (!this.ensureChart()) return;
+onMouseUp(): void {
+  if (!this.ensureChart()) return;
 
-    // ── REQ #2: always restore scroll/zoom on mouseup ─────────────────────────
-    this.unlockChartInteraction();
-    // ─────────────────────────────────────────────────────────────────────────
+  this.unlockChartInteraction();
 
-    if (this.isDraggingLine && this.draggedLineId) this.saveDraggedLine();
-
-    if ((this.isExtendingLeftHandle || this.isExtendingRightHandle) && this.extendingLineIdHandle) {
-      this.saveExtendedLine();
-    }
-
-    this.isExtendingLeftHandle = false;
-    this.isExtendingRightHandle = false;
-    this.extendingLineIdHandle = null;
-    this.isDraggingLine = false;
-    this.draggedLineId = null;
-    this.dragLineSnapshot = null;
-    this.dragStartPoint = null;
-    this.dragDistance = 0;
-    this.renderLines();
+  if (this.isDraggingLine && this.draggedLineId) {
+    this.pushUndo();
+    this.saveDraggedLine();
   }
+
+  if ((this.isExtendingLeftHandle || this.isExtendingRightHandle) && this.extendingLineIdHandle) {
+    this.pushUndo();
+    this.saveExtendedLine();
+  }
+
+  this.isExtendingLeftHandle = false;
+  this.isExtendingRightHandle = false;
+  this.extendingLineIdHandle = null;
+  this.isDraggingLine = false;
+  this.draggedLineId = null;
+  this.dragLineSnapshot = null;
+  this.dragStartPoint = null;
+  this.dragDistance = 0;
+  this.renderLines();
+}
 
   private saveDraggedLine(): void {
     if (this.selectedLineOwner === 'user') {
@@ -1127,88 +1151,88 @@ private async initChart(): Promise<void> {
     }
   }
 
-  private renderLine(line: DrawingLine): void {
-    if (!this.ensureChart()) return;
-    try {
-      const tr = this.chart.timeScale().getVisibleRange();
-      if (!tr) return;
-      const from = tr.from as number;
-      const to = tr.to as number;
+private renderLine(line: DrawingLine): void {
+  if (!this.ensureChart()) return;
+  try {
+    const tr = this.chart.timeScale().getVisibleRange();
+    if (!tr) return;
+    const from = tr.from as number;
+    const to = tr.to as number;
 
-      this.removeSeries(line.id);
+    this.removeSeries(line.id);
 
-      const isSelected = this.selectedLineId === line.id;
-      let color: string;
-      let width = isSelected ? 3 : 2;
-      let lineStyle = 0;
+    const isSelected = this.selectedLineId === line.id;
+    let color: string;
+    let width = isSelected ? 2 : 1;   // ← was 3 : 2
+    let lineStyle = 0;
 
-      if (line.tool === 'straightline') {
-        color = isSelected ? '#FFA500' : '#FFFFFF';
-        lineStyle = 1;
-        const data = [
-          { time: from, value: line.startPrice },
-          { time: to, value: line.startPrice },
-        ];
-        const series = this.chart.addSeries(LineSeries, {
-          color, lineWidth: width,
-          priceLineVisible: false, lastValueVisible: false,  // REQ #1
-          crosshairMarkerVisible: false, lineStyle,
-        });
-        series.setData(data);
-        this.lineSeriesMap.set(line.id, series);
-        return;
-      }
-
-      if (line.tool === 'trendline') {
-        color = isSelected ? '#FFA500' : (line.color ?? (line.type === 'admin' ? '#FF6B6B' : '#4ECDC4'));
-        lineStyle = 0;
-      } else {
-        color = isSelected ? '#FFA500' : (line.color ?? (line.type === 'admin' ? '#FF6B6B' : '#4ECDC4'));
-      }
-
-      if (line.tool === 'vline') {
-        this.renderVLine(line, color, width);
-        return;
-      }
-
-      let data: any[];
-      switch (line.tool) {
-        case 'hline':
-          data = [
-            { time: line.startTime, value: line.startPrice },
-            { time: line.endTime, value: line.endPrice },
-          ];
-          break;
-        case 'ray': {
-          const dt = line.endTime - line.startTime;
-          const dp = line.endPrice - line.startPrice;
-          const m = dt !== 0 ? dp / dt : 0;
-          const b = line.startPrice - m * line.startTime;
-          data = [
-            { time: line.startTime, value: line.startPrice },
-            { time: to, value: m * to + b },
-          ];
-          break;
-        }
-        default:
-          data = [
-            { time: line.startTime, value: line.startPrice },
-            { time: line.endTime, value: line.endPrice },
-          ];
-          break;
-      }
-
+    if (line.tool === 'straightline') {
+      color = isSelected ? '#FFA500' : '#FFFFFF';
+      lineStyle = 1;
+      const data = [
+        { time: from, value: line.startPrice },
+        { time: to, value: line.startPrice },
+      ];
       const series = this.chart.addSeries(LineSeries, {
         color, lineWidth: width,
-        priceLineVisible: false, lastValueVisible: false,  // REQ #1
+        priceLineVisible: false, lastValueVisible: false,
         crosshairMarkerVisible: false, lineStyle,
       });
       series.setData(data);
       this.lineSeriesMap.set(line.id, series);
-    } catch (e) {
-      console.error('[Chart] renderLine error:', e, line);
+      return;
     }
+
+    if (line.tool === 'trendline') {
+      color = isSelected ? '#FFA500' : (line.color ?? (line.type === 'admin' ? '#FF6B6B' : '#4ECDC4'));
+      lineStyle = 0;
+    } else {
+      color = isSelected ? '#FFA500' : (line.color ?? (line.type === 'admin' ? '#FF6B6B' : '#4ECDC4'));
+    }
+
+    if (line.tool === 'vline') {
+      this.renderVLine(line, color, width);
+      return;
+    }
+
+    let data: any[];
+    switch (line.tool) {
+      case 'hline':
+        data = [
+          { time: line.startTime, value: line.startPrice },
+          { time: line.endTime, value: line.endPrice },
+        ];
+        break;
+      case 'ray': {
+        const dt = line.endTime - line.startTime;
+        const dp = line.endPrice - line.startPrice;
+        const m = dt !== 0 ? dp / dt : 0;
+        const b = line.startPrice - m * line.startTime;
+        data = [
+          { time: line.startTime, value: line.startPrice },
+          { time: to, value: m * to + b },
+        ];
+        break;
+      }
+      default:
+        data = [
+          { time: line.startTime, value: line.startPrice },
+          { time: line.endTime, value: line.endPrice },
+        ];
+        break;
+    }
+
+    const series = this.chart.addSeries(LineSeries, {
+      color, lineWidth: width,
+      priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerVisible: false, lineStyle,
+    });
+    series.setData(data);
+    this.lineSeriesMap.set(line.id, series);
+  } catch (e) {
+    console.error('[Chart] renderLine error:', e, line);
   }
+}
 
   private renderVLine(line: DrawingLine, color: string, width: number): void {
     if (!this.chartData.length) return;
@@ -1230,46 +1254,45 @@ private async initChart(): Promise<void> {
     series.setData([{ time: t1, value: minP - pad }, { time: t2, value: maxP + pad }]);
     this.lineSeriesMap.set(line.id, series);
   }
+private renderSingleLine(line: DrawingLine): void {
+  if (!this.ensureChart()) return;
+  try {
+    const isSelected = this.selectedLineId === line.id;
+    let color: string;
+    let width = isSelected ? 2 : 1;   // ← was 3 : 2
+    let lineStyle = 0;
 
-  private renderSingleLine(line: DrawingLine): void {
-    if (!this.ensureChart()) return;
-    try {
-      const isSelected = this.selectedLineId === line.id;
-      let color: string;
-      let width = isSelected ? 3 : 2;
-      let lineStyle = 0;
-
-      if (line.tool === 'straightline') {
-        color = isSelected ? '#FFA500' : '#FFFFFF';
-        lineStyle = 1;
-      } else if (line.tool === 'trendline') {
-        color = isSelected ? '#FFA500' : (line.color ?? (line.type === 'admin' ? '#FF6B6B' : '#4ECDC4'));
-        lineStyle = 0;
-      } else {
-        color = isSelected ? '#FFA500' : (line.color ?? '#FFD700');
-      }
-
-      const data = [
-        { time: line.startTime, value: line.startPrice },
-        { time: line.endTime, value: line.endPrice },
-      ];
-      const existing = this.lineSeriesMap.get(line.id);
-      if (existing) {
-        existing.applyOptions({ color, lineWidth: width, lineStyle });
-        existing.setData(data);
-        return;
-      }
-      const series = this.chart.addSeries(LineSeries, {
-        color, lineWidth: width, lineStyle,
-        priceLineVisible: false, lastValueVisible: false,  // REQ #1
-        crosshairMarkerVisible: false, priceScaleId: 'right',
-      });
-      series.setData(data);
-      this.lineSeriesMap.set(line.id, series);
-    } catch (err) {
-      console.error('[Chart] renderSingleLine error', err);
+    if (line.tool === 'straightline') {
+      color = isSelected ? '#FFA500' : '#FFFFFF';
+      lineStyle = 1;
+    } else if (line.tool === 'trendline') {
+      color = isSelected ? '#FFA500' : (line.color ?? (line.type === 'admin' ? '#FF6B6B' : '#4ECDC4'));
+      lineStyle = 0;
+    } else {
+      color = isSelected ? '#FFA500' : (line.color ?? '#FFD700');
     }
+
+    const data = [
+      { time: line.startTime, value: line.startPrice },
+      { time: line.endTime, value: line.endPrice },
+    ];
+    const existing = this.lineSeriesMap.get(line.id);
+    if (existing) {
+      existing.applyOptions({ color, lineWidth: width, lineStyle });
+      existing.setData(data);
+      return;
+    }
+    const series = this.chart.addSeries(LineSeries, {
+      color, lineWidth: width, lineStyle,
+      priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerVisible: false, priceScaleId: 'right',
+    });
+    series.setData(data);
+    this.lineSeriesMap.set(line.id, series);
+  } catch (err) {
+    console.error('[Chart] renderSingleLine error', err);
   }
+}
 
   private renderLines(): void {
     if (!this.ensureChart()) return;
@@ -1310,57 +1333,57 @@ private async initChart(): Promise<void> {
     this.hintPrevInRange = nowInRangeIds;
   }
 
-  private triggerHintBlink(adminLine: DrawingLine): void {
-    if (!this.ensureChart()) return;
+ private triggerHintBlink(adminLine: DrawingLine): void {
+  if (!this.ensureChart()) return;
 
-    this.hintBlinkActive.add(adminLine.id);
-    this.hintBlinkFired.add(adminLine.id);
+  this.hintBlinkActive.add(adminLine.id);
+  this.hintBlinkFired.add(adminLine.id);
 
-    const stale = this.hintBlinkSeries.get(adminLine.id);
-    if (stale) {
-      try { this.chart.removeSeries(stale); } catch { }
-      this.hintBlinkSeries.delete(adminLine.id);
-    }
+  const stale = this.hintBlinkSeries.get(adminLine.id);
+  if (stale) {
+    try { this.chart.removeSeries(stale); } catch { }
+    this.hintBlinkSeries.delete(adminLine.id);
+  }
 
-    const series = this.chart.addSeries(LineSeries, {
-      color: '#FFD700',
-      lineWidth: 3,
-      lineStyle: 0,
-      priceLineVisible: false,
-      lastValueVisible: false,
-      crosshairMarkerVisible: false,
-    });
-    series.setData([
-      { time: adminLine.startTime, value: adminLine.startPrice },
-      { time: adminLine.endTime, value: adminLine.endPrice },
-    ]);
-    this.hintBlinkSeries.set(adminLine.id, series);
+  const series = this.chart.addSeries(LineSeries, {
+    color: '#FFD700',
+    lineWidth: 2,   // ← was 3
+    lineStyle: 0,
+    priceLineVisible: false,
+    lastValueVisible: false,
+    crosshairMarkerVisible: false,
+  });
+  series.setData([
+    { time: adminLine.startTime, value: adminLine.startPrice },
+    { time: adminLine.endTime, value: adminLine.endPrice },
+  ]);
+  this.hintBlinkSeries.set(adminLine.id, series);
 
-    const BLINK_MS = 300;
-    const BLINKS = 3;
-    const totalTicks = BLINKS * 2;
-    let tick = 0;
+  const BLINK_MS = 300;
+  const BLINKS = 3;
+  const totalTicks = BLINKS * 2;
+  let tick = 0;
 
-    const interval = setInterval(() => {
-      tick++;
-      try {
-        if (tick >= totalTicks) {
-          clearInterval(interval);
-          try { this.chart.removeSeries(series); } catch { }
-          this.hintBlinkSeries.delete(adminLine.id);
-          this.hintBlinkActive.delete(adminLine.id);
-        } else {
-          series.applyOptions({
-            color: tick % 2 === 0 ? '#FFD700' : 'rgba(0,0,0,0)',
-          });
-        }
-      } catch {
+  const interval = setInterval(() => {
+    tick++;
+    try {
+      if (tick >= totalTicks) {
         clearInterval(interval);
+        try { this.chart.removeSeries(series); } catch { }
         this.hintBlinkSeries.delete(adminLine.id);
         this.hintBlinkActive.delete(adminLine.id);
+      } else {
+        series.applyOptions({
+          color: tick % 2 === 0 ? '#FFD700' : 'rgba(0,0,0,0)',
+        });
       }
-    }, BLINK_MS);
-  }
+    } catch {
+      clearInterval(interval);
+      this.hintBlinkSeries.delete(adminLine.id);
+      this.hintBlinkActive.delete(adminLine.id);
+    }
+  }, BLINK_MS);
+}
 
   private stopAllHintBlinks(): void {
     for (const series of this.hintBlinkSeries.values()) {
@@ -1465,109 +1488,112 @@ private async initChart(): Promise<void> {
 
   // ==================== FLASH FEEDBACK ====================
 
-  private flashAdminLine(adminLine: DrawingLine, mode: 'hint' | 'success' = 'success'): void {
-    if (!this.ensureChart()) return;
+private flashAdminLine(adminLine: DrawingLine, mode: 'hint' | 'success' = 'success'): void {
+  if (!this.ensureChart()) return;
 
-    if (this.activeFlashInterval) {
-      clearInterval(this.activeFlashInterval);
-      this.activeFlashInterval = null;
-    }
-    if (this.activeFlashSeries) {
-      try { this.chart.removeSeries(this.activeFlashSeries); } catch { }
-      this.activeFlashSeries = null;
-    }
+  if (this.activeFlashInterval) {
+    clearInterval(this.activeFlashInterval);
+    this.activeFlashInterval = null;
+  }
+  if (this.activeFlashSeries) {
+    try { this.chart.removeSeries(this.activeFlashSeries); } catch { }
+    this.activeFlashSeries = null;
+  }
 
-    const colorOn = mode === 'success' ? '#00FF00' : '#FF8C00';
-    const colorOff = 'rgba(0,0,0,0)';
-    const BLINK_MS = 300;
-    const BLINKS = 3;
+  const colorOn = mode === 'success' ? '#00FF00' : '#FF8C00';
+  const colorOff = 'rgba(0,0,0,0)';
+  const BLINK_MS = 300;
+  const BLINKS = 3;
 
-    const flashSeries = this.chart.addSeries(LineSeries, {
-      color: colorOn,
-      lineWidth: 4,
-      lineStyle: 0,
-      priceLineVisible: false,
-      lastValueVisible: false,
-      crosshairMarkerVisible: false,
-    });
-    flashSeries.setData([
-      { time: adminLine.startTime, value: adminLine.startPrice },
-      { time: adminLine.endTime, value: adminLine.endPrice },
-    ]);
-    this.activeFlashSeries = flashSeries;
+  const flashSeries = this.chart.addSeries(LineSeries, {
+    color: colorOn,
+    lineWidth: 2,   // ← was 4
+    lineStyle: 0,
+    priceLineVisible: false,
+    lastValueVisible: false,
+    crosshairMarkerVisible: false,
+  });
+  flashSeries.setData([
+    { time: adminLine.startTime, value: adminLine.startPrice },
+    { time: adminLine.endTime, value: adminLine.endPrice },
+  ]);
+  this.activeFlashSeries = flashSeries;
 
-    let tick = 0;
-    const totalTicks = BLINKS * 2;
+  let tick = 0;
+  const totalTicks = BLINKS * 2;
 
-    this.activeFlashInterval = setInterval(() => {
-      tick++;
-      try {
-        if (tick >= totalTicks) {
-          clearInterval(this.activeFlashInterval);
-          this.activeFlashInterval = null;
-          this.chart.removeSeries(flashSeries);
-          this.activeFlashSeries = null;
-        } else {
-          flashSeries.applyOptions({ color: tick % 2 === 0 ? colorOn : colorOff });
-        }
-      } catch {
+  this.activeFlashInterval = setInterval(() => {
+    tick++;
+    try {
+      if (tick >= totalTicks) {
         clearInterval(this.activeFlashInterval);
         this.activeFlashInterval = null;
+        this.chart.removeSeries(flashSeries);
         this.activeFlashSeries = null;
+      } else {
+        flashSeries.applyOptions({ color: tick % 2 === 0 ? colorOn : colorOff });
       }
-    }, BLINK_MS);
-  }
+    } catch {
+      clearInterval(this.activeFlashInterval);
+      this.activeFlashInterval = null;
+      this.activeFlashSeries = null;
+    }
+  }, BLINK_MS);
+}
 
   // ==================== LINE MANAGEMENT ====================
 
-  deleteSelectedLine(): void {
-    if (!this.selectedLineId) {
-      this.showMessage('Select a line first.', 'info');
-      return;
-    }
-    const lineId = this.selectedLineId, owner = this.selectedLineOwner;
+ deleteSelectedLine(): void {
+  if (!this.selectedLineId) {
+    this.showMessage('Select a line first.', 'info');
+    return;
+  }
 
-    const line = owner === 'user'
-      ? this.userLines.find(l => l.id === lineId)
-      : this.adminLines.find(l => l.id === lineId);
+  const lineId = this.selectedLineId, owner = this.selectedLineOwner;
 
-    this.selectedLineId = null;
-    this.selectedLineOwner = null;
-    this.clearHandles();
+  const line = owner === 'user'
+    ? this.userLines.find(l => l.id === lineId)
+    : this.adminLines.find(l => l.id === lineId);
 
-    if (owner === 'user') {
-      const index = this.userLines.findIndex(l => l.id === lineId);
-      if (index !== -1) this.userLines.splice(index, 1);
+  this.pushUndo();
 
-      if (line && line.tool !== 'straightline') {
-        this.drawingService.deleteUserLine(this.testId, lineId)
-          .pipe(takeUntil(this.destroy$))
-          .subscribe({
-            next: (updated) => {
-              this.userLines = updated || [];
-              this.renderLines();
-              this.showMessage('✓ Line deleted from database!', 'success');
-            },
-            error: () => this.showMessage('Delete failed.', 'error'),
-          });
-      } else {
-        this.renderLines();
-        this.showMessage('✓ Straight line removed from chart', 'info');
-      }
-    } else if (owner === 'admin') {
-      const index = this.adminLines.findIndex(l => l.id === lineId);
-      if (index !== -1) this.adminLines.splice(index, 1);
-      this.drawingService.deleteAdminLine(this.testId, lineId)
+  this.selectedLineId = null;
+  this.selectedLineOwner = null;
+  this.clearHandles();
+
+  if (owner === 'user') {
+    const index = this.userLines.findIndex(l => l.id === lineId);
+    if (index !== -1) this.userLines.splice(index, 1);
+
+    if (line && line.tool !== 'straightline') {
+      this.drawingService.deleteUserLine(this.testId, lineId)
         .pipe(takeUntil(this.destroy$))
         .subscribe({
           next: (updated) => {
-            this.adminLines = updated || [];
+            this.userLines = updated || [];
             this.renderLines();
-            this.showMessage('✓ Admin line deleted!', 'success');
+            this.showMessage('✓ Line deleted from database!', 'success');
           },
+          error: () => this.showMessage('Delete failed.', 'error'),
         });
+    } else {
+      this.renderLines();
+      this.showMessage('✓ Straight line removed from chart', 'info');
     }
+  } else if (owner === 'admin') {
+    const index = this.adminLines.findIndex(l => l.id === lineId);
+    if (index !== -1) this.adminLines.splice(index, 1);
+    this.drawingService.deleteAdminLine(this.testId, lineId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (updated) => {
+          this.adminLines = updated || [];
+          this.renderLines();
+          this.showMessage('✓ Admin line deleted!', 'success');
+        },
+      });
   }
+}
 
 resetAllLines(): void {
   if (!confirm('Reset ALL lines? This cannot be undone.')) return;
@@ -1932,41 +1958,71 @@ private async loadData(): Promise<void> {
 
   // ==================== KEYBOARD SHORTCUTS ====================
 
-  @HostListener('document:keydown', ['$event'])
-  onKeyDown(event: KeyboardEvent): void {
-    const tag = (event.target as HTMLElement)?.tagName;
-    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+ @HostListener('document:keydown', ['$event'])
+onKeyDown(event: KeyboardEvent): void {
+  const tag = (event.target as HTMLElement)?.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
 
-    if (event.key === 'Delete' && this.activeTool === 'select' && this.selectedLineId) {
-      event.preventDefault();
-      this.deleteSelectedLine();
-      return;
-    }
-    if (event.key === 'Escape') {
-      if (this.isDrawing) this.cancelDrawing();
-      this.setActiveTool('select');
-      this.selectedLineId = null;
-      this.clearHandles();
-      this.renderLines();
-      return;
-    }
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd') {
-      event.preventDefault();
-      this.duplicateSelectedLine();
-      return;
-    }
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
-      event.preventDefault();
-      if (this.userRole === 'admin') this.saveAllLines();
-      return;
-    }
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'r') {
-      event.preventDefault();
-      this.resetAllLines();
-      return;
-    }
-    if (event.key === '1') this.setActiveTool('select');
-    if (event.key === '2') this.setActiveTool('trendline');
-    if (event.key === '3') this.setActiveTool('straightline');
+  // ── Ctrl+Z: undo last change ───────────────────────────────────────────
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+    event.preventDefault();
+    this.undoLastChange();
+    return;
   }
+  // ──────────────────────────────────────────────────────────────────────
+
+  if (event.key === 'Delete' && this.activeTool === 'select' && this.selectedLineId) {
+    event.preventDefault();
+    this.deleteSelectedLine();
+    return;
+  }
+  if (event.key === 'Escape') {
+    if (this.isDrawing) this.cancelDrawing();
+    this.setActiveTool('select');
+    this.selectedLineId = null;
+    this.clearHandles();
+    this.renderLines();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd') {
+    event.preventDefault();
+    this.duplicateSelectedLine();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+    event.preventDefault();
+    if (this.userRole === 'admin') this.saveAllLines();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'r') {
+    event.preventDefault();
+    this.resetAllLines();
+    return;
+  }
+  if (event.key === '1') this.setActiveTool('select');
+  if (event.key === '2') this.setActiveTool('trendline');
+  if (event.key === '3') this.setActiveTool('straightline');
+}
+private pushUndo(): void {
+  this.undoStack.push({
+    userLines: structuredClone(this.userLines),
+    adminLines: structuredClone(this.adminLines),
+  });
+  if (this.undoStack.length > this.MAX_UNDO) this.undoStack.shift();
+}
+
+private undoLastChange(): void {
+  const snapshot = this.undoStack.pop();
+  if (!snapshot) {
+    this.showMessage('Nothing to undo.', 'info');
+    return;
+  }
+  this.userLines = snapshot.userLines;
+  this.adminLines = snapshot.adminLines;
+  this.selectedLineId = null;
+  this.selectedLineOwner = null;
+  this.clearHandles();
+  this.renderLines();
+  this.showMessage('↩ Undo successful.', 'info');
+}
 }

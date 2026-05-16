@@ -249,20 +249,7 @@
   &.cursor-pointer   { cursor: crosshair; } // ← was 'default', now always crosshair
 }
 
-// ── Handle overlay canvas ────────────────────────────────────────────────────
-// CRITICAL: pointer-events MUST be 'none' here.
-//
-// The canvas sits above the Lightweight Charts div (z-index: 10). If it
-// intercepts pointer events, clicks and drags never reach the chart →
-// drawing tools stop working, crosshair stops moving, zooming stops.
-//
-// All mouse interaction is handled by @HostListener('document:mousedown/
-// mousemove/mouseup') in the component class, which uses getBoundingClientRect()
-// to compute chart-relative coordinates — the canvas does not need to be
-// the event target for any of that to work.
-//
-// Cursor feedback is set via this.handleCanvasRef.nativeElement.style.cursor
-// directly in onCrosshairMove() without going through Angular bindings.
+
 .handle-canvas {
   position: absolute;
   top: 0;
@@ -314,8 +301,8 @@
   pointer-events: none; // badges never block chart interaction
 
   .pulse {
-    width: 8px;
-    height: 8px;
+    width: 4px;
+    height: 4px;
     border-radius: 50%;
     background: var(--accent);
     animation: pulse 1.2s ease infinite;

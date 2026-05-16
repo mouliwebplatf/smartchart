@@ -11,6 +11,7 @@ import {
 } from '../services/file-upload.service';
 
 import { Test } from '../models/test.model';
+import { exportStorageToFile, runStorageDebug } from '../debug/storage-debug.util';
 
 @Component({
   selector: 'app-dashboard',
@@ -509,4 +510,11 @@ export class DashboardComponent implements OnInit {
       console.log('No stored tests found');
     }
   }
+  debugStorage(): void {
+  runStorageDebug();
+}
+
+exportStorage(): void {
+  exportStorageToFile();
+}
 }
