@@ -418,4 +418,5 @@ private loadFromLocalStorage(): void {
     this.matchedLines = new Map();
   }
 }
+
 }

@@ -9,6 +9,7 @@ import {
   FileUploadService,
   ChartDataPoint
 } from '../services/file-upload.service';
+import { DrawingService } from '../services/drawing.service';   // ← ADD THIS
 
 import { Test } from '../models/test.model';
 import { exportStorageToFile, runStorageDebug } from '../debug/storage-debug.util';
@@ -55,21 +56,14 @@ export class DashboardComponent implements OnInit {
     private authService: AuthService,
     private testService: TestService,
     private fileUploadService: FileUploadService,
-    private cdr: ChangeDetectorRef  // Add ChangeDetectorRef
+    private drawingService: DrawingService,   // ← ADD THIS
+    private cdr: ChangeDetectorRef
   ) {}
-
-  // =====================================================
-  // INIT
-  // =====================================================
 
   ngOnInit(): void {
     this.userRole = this.authService.getRole();
     this.loadTests();
   }
-
-  // =====================================================
-  // LOAD TESTS
-  // =====================================================
 
   loadTests(): void {
     this.isLoadingTests = true;
@@ -88,15 +82,9 @@ export class DashboardComponent implements OnInit {
     });
   }
 
-  // =====================================================
-  // FILE SELECT
-  // =====================================================
-
   onFileSelected(event: any): void {
     const file = event.target.files?.[0];
-    if (!file) {
-      return;
-    }
+    if (!file) return;
 
     this.newTest.fileError = '';
     this.validateFile(file);
@@ -106,10 +94,6 @@ export class DashboardComponent implements OnInit {
     }
     this.cdr.detectChanges();
   }
-
-  // =====================================================
-  // VALIDATE FILE
-  // =====================================================
 
   validateFile(file: File): void {
     const validExtensions = ['csv', 'xlsx', 'xls', 'json'];
@@ -123,20 +107,13 @@ export class DashboardComponent implements OnInit {
     const maxSize = 50 * 1024 * 1024;
     if (file.size > maxSize) {
       this.newTest.fileError = 'File size must be less than 50MB';
-      return;
     }
   }
 
-  // =====================================================
-  // ADD TEST WITH PROPER LOADING STATES
-  // =====================================================
-
   async addTest(): Promise<void> {
-    // Reset errors
     this.newTest.fileError = '';
     this.newTest.statusMessage = '';
 
-    // Validation
     if (!this.newTest.name.trim()) {
       this.newTest.fileError = 'Test name is required';
       this.cdr.detectChanges();
@@ -156,7 +133,6 @@ export class DashboardComponent implements OnInit {
     }
 
     try {
-      // Start processing
       this.newTest.isProcessing = true;
       this.newTest.isUploading = true;
       this.newTest.statusMessage = 'Starting file processing...';
@@ -165,14 +141,11 @@ export class DashboardComponent implements OnInit {
 
       console.log('Starting file processing...');
 
-      // Step 1: Parse file
       this.newTest.statusMessage = 'Parsing file...';
       this.newTest.fileProgress = 10;
       this.cdr.detectChanges();
       
-      const parsedData = await this.fileUploadService.parseFile(
-        this.newTest.selectedFile
-      );
+      const parsedData = await this.fileUploadService.parseFile(this.newTest.selectedFile);
 
       console.log('Parsed data sample:', parsedData.slice(0, 3));
       console.log('Total parsed items:', parsedData.length);
@@ -185,7 +158,6 @@ export class DashboardComponent implements OnInit {
         throw new Error('No valid chart data found');
       }
 
-      // Step 2: Validate data
       let chartData = parsedData;
       
       if (chartData[0]) {
@@ -206,7 +178,6 @@ export class DashboardComponent implements OnInit {
       this.newTest.statusMessage = 'Optimizing dataset...';
       this.cdr.detectChanges();
 
-      // Step 3: Sample if needed
       if (parsedData.length > 3000) {
         chartData = this.sampleLargeDataset(parsedData, 3000);
         console.warn(`Dataset reduced from ${parsedData.length} to ${chartData.length}`);
@@ -235,7 +206,6 @@ export class DashboardComponent implements OnInit {
       this.newTest.statusMessage = 'Uploading to server...';
       this.cdr.detectChanges();
 
-      // Step 4: Save to service
       this.testService.addTest(testData).subscribe({
         next: () => {
           console.log('Test saved successfully');
@@ -244,33 +214,23 @@ export class DashboardComponent implements OnInit {
           this.newTest.statusMessage = 'Complete!';
           this.cdr.detectChanges();
           
-          // Show success message
           this.showMessage(
             `✓ Test created successfully with ${chartData.length} candles`,
             'success'
           );
           
-          // Close modal and reset everything
           setTimeout(() => {
-            // Reset all flags first
             this.newTest.isUploading = false;
             this.newTest.isProcessing = false;
             this.newTest.fileProgress = 0;
             this.newTest.statusMessage = '';
-            
-            // Close modal
             this.showAddModal = false;
-            
-            // Reload tests
             this.loadTests();
-            
-            // Reset form after modal closes
             setTimeout(() => {
               this.resetForm();
               this.resetFileInput();
               this.cdr.detectChanges();
             }, 100);
-            
             this.cdr.detectChanges();
           }, 500);
         },
@@ -296,40 +256,20 @@ export class DashboardComponent implements OnInit {
     }
   }
 
-  // =====================================================
-  // SAMPLE LARGE DATASETS
-  // =====================================================
-
-  private sampleLargeDataset(
-    data: ChartDataPoint[],
-    targetSize: number
-  ): ChartDataPoint[] {
-    if (data.length <= targetSize) {
-      return data;
-    }
-
+  private sampleLargeDataset(data: ChartDataPoint[], targetSize: number): ChartDataPoint[] {
+    if (data.length <= targetSize) return data;
     const sampled: ChartDataPoint[] = [];
     const bucketSize = data.length / targetSize;
-
     for (let i = 0; i < targetSize; i++) {
       const index = Math.floor(i * bucketSize);
       sampled.push(data[index]);
     }
-
     return sampled;
   }
-
-  // =====================================================
-  // OPEN CHART
-  // =====================================================
 
   openChart(testId: number): void {
     this.router.navigate([`/${this.userRole}/chart`, testId]);
   }
-
-  // =====================================================
-  // EDIT TEST
-  // =====================================================
 
   editTests(test: Test): void {
     this.selectedTest = test;
@@ -341,24 +281,13 @@ export class DashboardComponent implements OnInit {
     this.cdr.detectChanges();
   }
 
-  // =====================================================
-  // UPDATE TEST
-  // =====================================================
-
   updateTest(): void {
-    if (
-      !this.selectedTest ||
-      !this.editTest.name.trim() ||
-      !this.editTest.description.trim()
-    ) {
+    if (!this.selectedTest || !this.editTest.name.trim() || !this.editTest.description.trim()) {
       this.showMessage('Please fill in all fields', 'error');
       return;
     }
 
-    this.testService.updateTest(
-      this.selectedTest.id,
-      this.editTest
-    ).subscribe({
+    this.testService.updateTest(this.selectedTest.id, this.editTest).subscribe({
       next: () => {
         this.showEditModal = false;
         this.selectedTest = null;
@@ -375,41 +304,47 @@ export class DashboardComponent implements OnInit {
   }
 
   // =====================================================
-  // DELETE TEST
+  // DELETE TEST – ALSO REMOVE ALL DRAWING DATA
   // =====================================================
+ deleteTest(testId: number): void {
+  const confirmed = confirm('Are you sure you want to delete this test? All associated drawing data (admin & user lines) will be permanently removed.');
+  if (!confirmed) return;
 
-  deleteTest(testId: number): void {
-    const confirmed = confirm('Are you sure you want to delete this test?');
-    if (!confirmed) {
-      return;
+  // Clear all drawing data for this testId using the DrawingService
+  this.drawingService.clearAdminLines(testId).subscribe({
+    next: () => {
+      console.log(`Admin lines cleared for test ${testId}`);
+    },
+    error: (err) => console.error('Error clearing admin lines', err)
+  });
+
+  this.drawingService.clearAllUserLines(testId).subscribe({
+    next: () => {
+      console.log(`User lines cleared for test ${testId}`);
+    },
+    error: (err) => console.error('Error clearing user lines', err)
+  });
+
+  // Now delete the test from the test service
+  this.testService.deleteTest(testId).subscribe({
+    next: () => {
+      this.loadTests();
+      this.showMessage('Test and all its drawing data deleted successfully', 'success');
+      this.cdr.detectChanges();
+    },
+    error: (err) => {
+      console.error(err);
+      this.showMessage('Failed to delete test', 'error');
+      this.cdr.detectChanges();
     }
-
-    this.testService.deleteTest(testId).subscribe({
-      next: () => {
-        this.loadTests();
-        this.showMessage('Test deleted successfully', 'success');
-        this.cdr.detectChanges();
-      },
-      error: (err) => {
-        console.error(err);
-        this.showMessage('Failed to delete test', 'error');
-        this.cdr.detectChanges();
-      }
-    });
-  }
-
-  // =====================================================
-  // MODAL HANDLERS
-  // =====================================================
+  });
+}
 
   closeAddModal(): void {
     if (this.newTest.isProcessing || this.newTest.isUploading) {
       const confirmClose = confirm('Upload in progress. Are you sure you want to cancel?');
-      if (!confirmClose) {
-        return;
-      }
+      if (!confirmClose) return;
     }
-    
     this.showAddModal = false;
     this.resetForm();
     this.resetFileInput();
@@ -419,21 +354,15 @@ export class DashboardComponent implements OnInit {
   closeEditModal(): void {
     this.showEditModal = false;
     this.selectedTest = null;
-    this.editTest = {
-      name: '',
-      description: ''
-    };
+    this.editTest = { name: '', description: '' };
     this.cdr.detectChanges();
   }
 
   onModalBackgroundClick(event: MouseEvent, modalType: string): void {
     const target = event.target as HTMLElement;
     if (target.classList.contains('modal')) {
-      if (modalType === 'add') {
-        this.closeAddModal();
-      } else if (modalType === 'edit') {
-        this.closeEditModal();
-      }
+      if (modalType === 'add') this.closeAddModal();
+      else if (modalType === 'edit') this.closeEditModal();
     }
   }
 
@@ -443,10 +372,6 @@ export class DashboardComponent implements OnInit {
     this.resetFileInput();
     this.cdr.detectChanges();
   }
-
-  // =====================================================
-  // RESET FORM
-  // =====================================================
 
   private resetForm(): void {
     this.newTest = {
@@ -464,35 +389,21 @@ export class DashboardComponent implements OnInit {
   }
 
   private resetFileInput(): void {
-    if (this.fileInput) {
-      this.fileInput.nativeElement.value = '';
-    }
+    if (this.fileInput) this.fileInput.nativeElement.value = '';
     this.newTest.selectedFile = null;
     this.newTest.fileError = '';
     this.cdr.detectChanges();
   }
-
-  // =====================================================
-  // LOGOUT
-  // =====================================================
 
   logout(): void {
     this.authService.logout();
     this.router.navigate(['/login']);
   }
 
-  // =====================================================
-  // MESSAGE
-  // =====================================================
-
   private showMessage(msg: string, type: 'success' | 'error' | 'info'): void {
     console.log(`${type.toUpperCase()}: ${msg}`);
     alert(msg);
   }
-
-  // =====================================================
-  // DEBUG
-  // =====================================================
 
   debugStoredData(): void {
     const stored = localStorage.getItem('tests');
@@ -510,11 +421,4 @@ export class DashboardComponent implements OnInit {
       console.log('No stored tests found');
     }
   }
-//   debugStorage(): void {
-//   runStorageDebug();
-// }
-
-// exportStorage(): void {
-//   exportStorageToFile();
-// }
 }
