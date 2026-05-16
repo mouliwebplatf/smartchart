@@ -510,11 +510,11 @@ export class DashboardComponent implements OnInit {
       console.log('No stored tests found');
     }
   }
-  debugStorage(): void {
-  runStorageDebug();
-}
+//   debugStorage(): void {
+//   runStorageDebug();
+// }
 
-exportStorage(): void {
-  exportStorageToFile();
-}
+// exportStorage(): void {
+//   exportStorageToFile();
+// }
 }
