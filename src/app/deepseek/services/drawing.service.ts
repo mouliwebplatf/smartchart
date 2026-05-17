@@ -10,7 +10,7 @@ export class DrawingService {
   private userLines    = new Map<number, DrawingLine[]>();
   private matchedLines = new Map<number, Set<string>>();
 
-  // Tolerance for exact matching (users must draw precisely)
+  // Tolerance for exact matching — BOTH endpoints must be within tolerance
   private readonly EXACT_TIME_TOLERANCE_SEC = 1;     // 1 second
   private readonly EXACT_PRICE_TOLERANCE    = 0.01; // 0.01 price units
 
@@ -25,24 +25,22 @@ export class DrawingService {
   }
 
   addAdminLine(testId: number, line: DrawingLine): Observable<DrawingLine> {
-  const lines = this.adminLines.get(testId) ?? [];
-  // ── Always stamp testId on the line so filter-by-testId works reliably ──
-  const stamped = { ...line, testId };
-  if (!lines.find(l => l.id === stamped.id)) {
-    lines.push(stamped);
+    const lines = this.adminLines.get(testId) ?? [];
+    const stamped = { ...line, testId };
+    if (!lines.find(l => l.id === stamped.id)) {
+      lines.push(stamped);
+    }
+    this.adminLines.set(testId, lines);
+    this.persist();
+    return of({ ...stamped });
   }
-  this.adminLines.set(testId, lines);
-  this.persist();
-  return of({ ...stamped });
-}
 
-saveAdminLines(testId: number, lines: DrawingLine[]): Observable<DrawingLine[]> {
-  // ── Stamp every line with testId before storing ────────────────────────
-  const stamped = lines.map(l => ({ ...l, testId }));
-  this.adminLines.set(testId, stamped);
-  this.persist();
-  return of([...stamped]);
-}
+  saveAdminLines(testId: number, lines: DrawingLine[]): Observable<DrawingLine[]> {
+    const stamped = lines.map(l => ({ ...l, testId }));
+    this.adminLines.set(testId, stamped);
+    this.persist();
+    return of([...stamped]);
+  }
 
   updateAdminLine(
     testId: number,
@@ -72,29 +70,13 @@ saveAdminLines(testId: number, lines: DrawingLine[]): Observable<DrawingLine[]> 
     return of(void 0);
   }
 
-  /**
-   * Wipes in-memory admin lines so admin starts with a blank canvas each session.
-   * Does NOT call persist() — saved answers in localStorage stay intact
-   * so users can still be validated against them.
-   */
   clearAdminLinesInMemoryOnly(testId: number): void {
     this.adminLines.set(testId, []);
   }
 
-  // ── NEW: required by chart.component when hydrating from an external source ──
-  /**
-   * Registers admin lines into memory for a given testId without any HTTP call
-   * and without persisting to localStorage.
-   *
-   * In practice this is rarely needed — loadFromLocalStorage() already populates
-   * this.adminLines on service construction from the 'drawing_data' key.
-   * This method exists as a safety escape hatch (e.g. when another storage key
-   * or API response needs to be injected without overwriting persisted data).
-   */
   setAdminLinesInMemory(testId: number, lines: DrawingLine[]): void {
     this.adminLines.set(testId, lines.map(l => ({ ...l })));
   }
-  // ─────────────────────────────────────────────────────────────────────────────
 
   // ═══════════════════════════ USER LINES ════════════════════════════
 
@@ -212,7 +194,8 @@ saveAdminLines(testId: number, lines: DrawingLine[]): Observable<DrawingLine[]> 
     this.matchedLines.set(testId, new Set());
   }
 
-  // ═══════════════════════════ VALIDATION (EXACT MATCHING) ══════════════════════
+  // ═══════════════════════════ VALIDATION (BOTH ENDPOINTS) ═══════════════════
+  // FIX #2: Both start AND end points must be within tolerance for all tool types.
 
   validateUserLine(testId: number, userLine: DrawingLine): ValidationResult {
     const adminLines = this.adminLines.get(testId) ?? [];
@@ -271,34 +254,58 @@ saveAdminLines(testId: number, lines: DrawingLine[]): Observable<DrawingLine[]> 
       isWithinTolerance: false,
       correctLine: undefined,
       remainingCount: remaining.length,
-      message: '✗ Line does not match any admin line exactly. Draw the exact same start and end points.',
+      message: '✗ Both start and end points must match exactly. Check both endpoints.',
     };
   }
 
+  /**
+   * FIX #2 — Validates BOTH start and end points for every tool type.
+   *
+   * Previously only the end-point (or slope) was checked for some tools,
+   * which allowed users to anchor at any arbitrary start and still pass.
+   * Now both endpoints must be within tolerance.
+   */
   private isExactMatch(user: DrawingLine, admin: DrawingLine): boolean {
     if (user.tool !== admin.tool) return false;
 
+    // ── hline: price is constant so check startPrice & endPrice (both endpoints) ──
     if (user.tool === 'hline') {
-      return Math.abs(user.startPrice - admin.startPrice) <= this.EXACT_PRICE_TOLERANCE
-          && Math.abs(user.endPrice   - admin.endPrice)   <= this.EXACT_PRICE_TOLERANCE;
+      const startPriceOk = Math.abs(user.startPrice - admin.startPrice) <= this.EXACT_PRICE_TOLERANCE;
+      const endPriceOk   = Math.abs(user.endPrice   - admin.endPrice)   <= this.EXACT_PRICE_TOLERANCE;
+      // Also verify both time endpoints so the line covers the same range
+      const startTimeOk  = Math.abs(user.startTime  - admin.startTime)  <= this.EXACT_TIME_TOLERANCE_SEC;
+      const endTimeOk    = Math.abs(user.endTime    - admin.endTime)    <= this.EXACT_TIME_TOLERANCE_SEC;
+      return startPriceOk && endPriceOk && startTimeOk && endTimeOk;
     }
 
+    // ── vline: time is constant — check both time & verify start/end prices ──────
     if (user.tool === 'vline') {
-      return Math.abs(user.startTime - admin.startTime) <= this.EXACT_TIME_TOLERANCE_SEC
-          && Math.abs(user.endTime   - admin.endTime)   <= this.EXACT_TIME_TOLERANCE_SEC;
+      const startTimeOk  = Math.abs(user.startTime  - admin.startTime)  <= this.EXACT_TIME_TOLERANCE_SEC;
+      const endTimeOk    = Math.abs(user.endTime    - admin.endTime)    <= this.EXACT_TIME_TOLERANCE_SEC;
+      // price span should also match so the line covers the same vertical range
+      const startPriceOk = Math.abs(user.startPrice - admin.startPrice) <= this.EXACT_PRICE_TOLERANCE;
+      const endPriceOk   = Math.abs(user.endPrice   - admin.endPrice)   <= this.EXACT_PRICE_TOLERANCE;
+      return startTimeOk && endTimeOk && startPriceOk && endPriceOk;
     }
 
+    // ── ray: fixed start point + same slope (end is unbounded, so only start matters) ──
     if (user.tool === 'ray') {
-      const startTimeMatch  = Math.abs(user.startTime  - admin.startTime)  <= this.EXACT_TIME_TOLERANCE_SEC;
-      const startPriceMatch = Math.abs(user.startPrice - admin.startPrice) <= this.EXACT_PRICE_TOLERANCE;
-      if (!startTimeMatch || !startPriceMatch) return false;
-      return Math.abs(this.calcSlope(user) - this.calcSlope(admin)) <= 0.0001;
+      const startTimeOk  = Math.abs(user.startTime  - admin.startTime)  <= this.EXACT_TIME_TOLERANCE_SEC;
+      const startPriceOk = Math.abs(user.startPrice - admin.startPrice) <= this.EXACT_PRICE_TOLERANCE;
+      if (!startTimeOk || !startPriceOk) return false;
+      // Also check end point so the direction/slope is correct
+      const endTimeOk    = Math.abs(user.endTime    - admin.endTime)    <= this.EXACT_TIME_TOLERANCE_SEC;
+      const endPriceOk   = Math.abs(user.endPrice   - admin.endPrice)   <= this.EXACT_PRICE_TOLERANCE;
+      return endTimeOk && endPriceOk;
     }
 
-    return Math.abs(user.startTime  - admin.startTime)  <= this.EXACT_TIME_TOLERANCE_SEC
-        && Math.abs(user.endTime    - admin.endTime)     <= this.EXACT_TIME_TOLERANCE_SEC
-        && Math.abs(user.startPrice - admin.startPrice)  <= this.EXACT_PRICE_TOLERANCE
-        && Math.abs(user.endPrice   - admin.endPrice)    <= this.EXACT_PRICE_TOLERANCE;
+    // ── trendline / straightline / default: check ALL four values ────────────────
+    return (
+      Math.abs(user.startTime  - admin.startTime)  <= this.EXACT_TIME_TOLERANCE_SEC
+      && Math.abs(user.endTime    - admin.endTime)     <= this.EXACT_TIME_TOLERANCE_SEC
+      && Math.abs(user.startPrice - admin.startPrice)  <= this.EXACT_PRICE_TOLERANCE
+      && Math.abs(user.endPrice   - admin.endPrice)    <= this.EXACT_PRICE_TOLERANCE
+    );
   }
 
   private calcSlope(line: DrawingLine): number {
@@ -371,52 +378,48 @@ saveAdminLines(testId: number, lines: DrawingLine[]): Observable<DrawingLine[]> 
 
   // ═══════════════════════════ PERSISTENCE ═════════════════════
 
-private persist(): void {
-  try {
-    localStorage.setItem(
-      'drawing_data',
-      JSON.stringify({
-        // Serialize as array of [testId, lines[]] pairs
-        adminLines: Array.from(this.adminLines.entries()),
-      })
-    );
-  } catch (e) {
-    console.warn('[DrawingService] persist failed:', e);
+  private persist(): void {
+    try {
+      localStorage.setItem(
+        'drawing_data',
+        JSON.stringify({
+          adminLines: Array.from(this.adminLines.entries()),
+        })
+      );
+    } catch (e) {
+      console.warn('[DrawingService] persist failed:', e);
+    }
   }
-}
 
-private loadFromLocalStorage(): void {
-  try {
-    const raw = localStorage.getItem('drawing_data');
-    if (!raw) return;
+  private loadFromLocalStorage(): void {
+    try {
+      const raw = localStorage.getItem('drawing_data');
+      if (!raw) return;
 
-    const parsed = JSON.parse(raw);
-    const adminEntries: [number, DrawingLine[]][] = (parsed.adminLines ?? []).map(
-      ([k, v]: [any, DrawingLine[]]) => [Number(k), v]
-    );
+      const parsed = JSON.parse(raw);
+      const adminEntries: [number, DrawingLine[]][] = (parsed.adminLines ?? []).map(
+        ([k, v]: [any, DrawingLine[]]) => [Number(k), v]
+      );
 
-    // ── Validate: only keep entries where lines actually match their key ──
-    this.adminLines = new Map(
-      adminEntries.map(([testId, lines]) => [
-        testId,
-        (lines ?? []).filter(l => l && l.id), // drop corrupt entries
-      ])
-    );
+      this.adminLines = new Map(
+        adminEntries.map(([testId, lines]) => [
+          testId,
+          (lines ?? []).filter(l => l && l.id),
+        ])
+      );
 
-    // userLines and matchedLines are session-only — never persisted
-    this.userLines    = new Map();
-    this.matchedLines = new Map();
+      this.userLines    = new Map();
+      this.matchedLines = new Map();
 
-    console.log(
-      '[DrawingService] Loaded from localStorage:',
-      Array.from(this.adminLines.entries()).map(([k, v]) => `testId=${k}: ${v.length} lines`)
-    );
-  } catch (err) {
-    console.warn('[DrawingService] loadFromLocalStorage failed, resetting:', err);
-    this.adminLines   = new Map();
-    this.userLines    = new Map();
-    this.matchedLines = new Map();
+      console.log(
+        '[DrawingService] Loaded from localStorage:',
+        Array.from(this.adminLines.entries()).map(([k, v]) => `testId=${k}: ${v.length} lines`)
+      );
+    } catch (err) {
+      console.warn('[DrawingService] loadFromLocalStorage failed, resetting:', err);
+      this.adminLines   = new Map();
+      this.userLines    = new Map();
+      this.matchedLines = new Map();
+    }
   }
-}
-
 }

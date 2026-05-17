@@ -38,27 +38,31 @@
 
         <!-- Trend Line -->
         <button class="tool-btn" [class.active]="activeTool === 'trendline'"
-                (click)="setActiveTool('trendline')" title="Draw Trend Line">
+                (click)="setActiveTool('trendline')" title="Draw Trend Line (2)">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="3" y1="3" x2="21" y2="21"/>
             <circle cx="3"  cy="3"  r="1.5" fill="currentColor"/>
             <circle cx="21" cy="21" r="1.5" fill="currentColor"/>
           </svg>
           <span>Line</span>
+          <span class="kbd-hint">2</span>
         </button>
 
-        <!-- Straight Line -->
-        <!-- <button class="tool-btn" [class.active]="activeTool === 'straightline'"
-                (click)="setActiveTool('straightline')"
-                title="Straight Horizontal Line — single click, spans full width (H)">
+        <!-- Measure Tool -->
+        <button class="tool-btn" [class.active]="activeTool === 'measure'"
+                (click)="setActiveTool('measure')"
+                title="Measure price & time range (4)">
+          <!-- Ruler icon -->
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="2"  y1="12" x2="22" y2="12"/>
-            <line x1="2"  y1="9"  x2="2"  y2="15"/>
-            <line x1="22" y1="9"  x2="22" y2="15"/>
+            <rect x="2" y="7" width="20" height="10" rx="1"/>
+            <line x1="6"  y1="7"  x2="6"  y2="11"/>
+            <line x1="10" y1="7"  x2="10" y2="11"/>
+            <line x1="14" y1="7"  x2="14" y2="11"/>
+            <line x1="18" y1="7"  x2="18" y2="11"/>
           </svg>
-          <span>Straight</span>
-          <span class="kbd-hint">H</span>
-        </button> -->
+          <span>Measure</span>
+          <span class="kbd-hint">4</span>
+        </button>
 
       </div>
 
@@ -68,11 +72,12 @@
         <div class="toolbar-title">Selection</div>
 
         <button class="tool-btn" [class.active]="activeTool === 'select'"
-                (click)="setActiveTool('select')" title="Select / Move / Extend Line">
+                (click)="setActiveTool('select')" title="Select / Move / Extend Line (1)">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M3 3L9 21L12 15L18 18L15 12L21 9L3 3Z"/>
           </svg>
           <span>Select</span>
+          <span class="kbd-hint">1</span>
         </button>
       </div>
 
@@ -122,12 +127,13 @@
 
         <!-- Save (admin only) -->
         <button *ngIf="userRole === 'admin'" class="tool-btn save"
-                (click)="saveAllLines()" title="Save as correct answers">
+                (click)="saveAllLines()" title="Save as correct answers (Ctrl+S)">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
             <polygon points="12 3 12 10 8 10 12 14 16 10 12 10"/>
           </svg>
           <span>Save</span>
+          <span class="kbd-hint">Ctrl+S</span>
         </button>
 
         <!-- Reset -->
@@ -162,17 +168,25 @@
         </div>
       </div>
 
-      <!-- Straight-line hint panel -->
+      <!-- Measure tool hint panel -->
       <div class="selection-info straightline-hint"
-           *ngIf="activeTool === 'straightline'">
-        <div class="info-title">Straight Line</div>
+           *ngIf="activeTool === 'measure'">
+        <div class="info-title">Measure Tool</div>
         <div class="info-row">
-          <span class="info-icon">↵</span>
-          <span>Single click places a full-width horizontal line at that price</span>
+          <span class="info-icon">①</span>
+          <span>Click to set start point</span>
         </div>
         <div class="info-row">
-          <span class="info-icon">⇥</span>
-          <span>Switch to Select to drag it up/down</span>
+          <span class="info-icon">②</span>
+          <span>Move cursor to preview</span>
+        </div>
+        <div class="info-row">
+          <span class="info-icon">③</span>
+          <span>Click to finish & see stats</span>
+        </div>
+        <div class="info-row">
+          <span class="info-icon">Esc</span>
+          <span>Clear measurement</span>
         </div>
       </div>
 
@@ -195,10 +209,16 @@
         <span class="pulse"></span> Click to set end point &nbsp;·&nbsp; Esc to cancel
       </div>
 
-      <!-- Straight-line crosshair badge -->
-      <div class="drawing-badge straightline-active" *ngIf="activeTool === 'straightline' && !isDrawing">
-        <span class="pulse straightline-pulse"></span>
-        Click anywhere on the chart to place a full-width line
+      <!-- Measure active badge -->
+      <div class="drawing-badge measure-active" *ngIf="activeTool === 'measure' && isMeasuring">
+        <span class="pulse measure-pulse"></span>
+        Move cursor and click to finish measurement &nbsp;·&nbsp; Esc to cancel
+      </div>
+
+      <!-- Measure start badge (before first click) -->
+      <div class="drawing-badge measure-start" *ngIf="activeTool === 'measure' && !isMeasuring">
+        <span class="pulse measure-pulse"></span>
+        Click to set the start point for measurement
       </div>
 
       <!-- LW Chart host -->
@@ -208,23 +228,17 @@
 
       <!--
         Handle overlay canvas.
-
-        IMPORTANT — pointer-events is set statically to 'none' here.
-        The TypeScript sets canvas.style.cursor directly in onCrosshairMove()
-        to give hover feedback without going through Angular's binding system.
-
-        DO NOT restore [style.pointer-events]="... cursorIsOverInteractable ..."
-        here — that binding is what caused NG0100. Writing cursorIsOverInteractable
-        from a Lightweight Charts crosshair-move callback (which fires synchronously
-        during Angular's first change-detection pass on component activation) trips
-        the ExpressionChangedAfterItHasBeenCheckedError every time.
-
-        The canvas does not need to receive pointer events because all mouse
-        interaction (drag, click, hit-test) is handled by the @HostListener
-        listeners on `document` in the component class, which correctly read
-        coordinates relative to the chart container's bounding rect.
+        pointer-events: none — interaction is handled via @HostListener on document.
       -->
       <canvas #handleCanvas class="handle-canvas"></canvas>
+
+      <!--
+        Measure overlay canvas.
+        Sits above both chart and handle canvas (z-index: 10).
+        pointer-events: none — never intercepts mouse events.
+        Draws the blue rectangle + arrows + tooltip for the measure tool.
+      -->
+      <canvas #measureCanvas class="measure-canvas"></canvas>
     </div>
   </div>
 
@@ -295,7 +309,7 @@
   {{ matchedCount }} / {{ totalAdminLines }} lines matched
 </div>
 
-<!-- Shift-lock hints during drawing / handle drag -->
+<!-- Shift-lock hints during handle drag -->
 <div class="drawing-badge shift-hint"
      *ngIf="(isExtendingLeftHandle || isExtendingRightHandle) && shiftHeld">
   <span>🔒</span> Shift held — locked to original slope
